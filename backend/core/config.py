@@ -73,16 +73,18 @@ ENABLE_RERANKER = _env_bool("ENABLE_RERANKER", True)
 RERANKER_MODEL_NAME = os.getenv("RERANKER_MODEL_NAME", "BAAI/bge-reranker-v2-m3")
 
 # ---------------------------------------------------------------------------
-# Knowledge Graph (Neo4j)
+# Knowledge Graph (Neo4j / Mock)
 # ---------------------------------------------------------------------------
 ENABLE_GRAPH = _env_bool("ENABLE_GRAPH", True)
+# GRAPH_BACKEND: "neo4j" (mặc định cho dev/prod chuẩn) | "mock" (in-memory cho unit test / offline) | "none"
+GRAPH_BACKEND = os.getenv("GRAPH_BACKEND", "neo4j").strip().lower()
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "medicalrag")
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
 GRAPH_MAX_TRIPLES = _env_int("GRAPH_MAX_TRIPLES", 12)
-# Nếu không kết nối được Neo4j thì tự động dùng graph in-memory để hệ thống vẫn chạy.
-GRAPH_INMEMORY_FALLBACK = _env_bool("GRAPH_INMEMORY_FALLBACK", True)
+# Mặc định False: không tự động fallback ngầm để tránh che giấu lỗi hạ tầng.
+GRAPH_INMEMORY_FALLBACK = _env_bool("GRAPH_INMEMORY_FALLBACK", False)
 
 # ---------------------------------------------------------------------------
 # PHI De-identification

@@ -20,6 +20,7 @@ export default function ChatView({ conversationId, selectedModel, onConversation
   const [status, setStatus] = useState('');
   const endRef = useRef(null);
   const convRef = useRef(conversationId);
+  const activeStreamConvIdRef = useRef(null);
 
   useEffect(() => { convRef.current = conversationId; }, [conversationId]);
 
@@ -27,6 +28,8 @@ export default function ChatView({ conversationId, selectedModel, onConversation
   useEffect(() => {
     let cancel = false;
     if (!conversationId) { setMessages([]); return; }
+    // Nếu conversationId được cập nhật từ chính cuộc hội thoại đang stream, không ghi đè messages
+    if (activeStreamConvIdRef.current === conversationId) return;
     api.getConversation(conversationId)
       .then((d) => { if (!cancel) setMessages((d.messages || []).map((m) => ({
         role: m.role, content: m.content, sources: m.sources || [],
@@ -52,8 +55,10 @@ export default function ChatView({ conversationId, selectedModel, onConversation
     await streamChat({ message: question, model, conversation_id: convRef.current }, (ev) => {
       if (ev.type === 'conversation') {
         if (!convRef.current && ev.data?.conversation_id) {
-          convRef.current = ev.data.conversation_id;
-          onConversationStarted?.(ev.data.conversation_id);
+          const newId = ev.data.conversation_id;
+          convRef.current = newId;
+          activeStreamConvIdRef.current = newId;
+          onConversationStarted?.(newId);
         }
       } else if (ev.type === 'pipeline') {
         patchBot({ pipeline: ev.data }); setActiveStage('retrieve'); setStatus('Đã truy xuất ngữ cảnh, đang sinh câu trả lời…');
@@ -103,6 +108,7 @@ export default function ChatView({ conversationId, selectedModel, onConversation
       }
       onAfterChat?.();
     } finally {
+      activeStreamConvIdRef.current = null;
       setLoading(false);
       setActiveStage(null);
     }

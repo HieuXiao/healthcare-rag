@@ -1,4 +1,4 @@
-# Healthcare RAG
+# Healthcare RAG — Clinical Medical RAG
 
 Trợ lý y tế cấp lâm sàng dựa trên kiến trúc **Medical RAG nâng cao**: khử định danh
 PHI, định tuyến truy vấn, **GraphRAG** (Knowledge Graph) + **Hybrid Search**
@@ -16,7 +16,7 @@ Giao diện Bác sĩ (React, SSE)
         ├────────────── Luồng Phác đồ (GraphRAG) ──────────────┐
         │  3. Knowledge Graph   core/graph_store.py             │
         │     Entity Matching → Graph Traversal → Triple Text   │
-        │     (Neo4j Community, fallback in-memory)              │
+        │     (Neo4j Community hoặc Mock in-memory có chủ đích) │
         │                                                        │
         └────────────── Luồng chung (Hybrid Search) ───────────┘
            4. Hybrid Retrieval  core/hybrid_retriever.py
@@ -43,20 +43,20 @@ tầng đều **self-host $0** (khoản tốn tiền duy nhất là API Gemini).
 |---|---|---|
 | Khử định danh PHI | [backend/core/deidentify.py](backend/core/deidentify.py) | Regex/pattern tiếng Việt |
 | Intent Router | [backend/core/intent_router.py](backend/core/intent_router.py) | Heuristic từ khoá |
-| Knowledge Graph | [backend/core/graph_store.py](backend/core/graph_store.py) · [seed](backend/core/graph_seed.py) | Neo4j Community / in-memory |
+| Knowledge Graph | [backend/core/graph_store.py](backend/core/graph_store.py) · [seed](backend/core/graph_seed.py) | Neo4j Community / Mock seed |
 | Hybrid Retrieval | [backend/core/hybrid_retriever.py](backend/core/hybrid_retriever.py) | BM25 + Vector + RRF |
 | Reranker | [backend/core/reranker.py](backend/core/reranker.py) | Cross-encoder `bge-reranker-v2-m3` |
 | Pipeline / LLM | [backend/core/generator.py](backend/core/generator.py) | Gemini (google-genai) |
 | Med-FactCheck | [backend/core/factcheck.py](backend/core/factcheck.py) | Grounding overlap |
 | Ingestion (SOAP-aware) | [backend/core/ingestion.py](backend/core/ingestion.py) | OCR + SOAP chunking |
-| API | [backend/api/routes.py](backend/api/routes.py) | FastAPI + SSE |
-| Frontend | [frontend/src/App.jsx](frontend/src/App.jsx) | React 19, Vite 8 |
+| API Backend | [backend/api/routes.py](backend/api/routes.py) · [admin_routes.py](backend/api/admin_routes.py) | FastAPI + SSE + Admin Analytics |
+| Frontend & Admin Portal | [frontend/src/App.jsx](frontend/src/App.jsx) · [AdminPanel.jsx](frontend/src/AdminPanel.jsx) | React 19, Vite, SVG Charts, URL Hash Routing |
 
 ## Yêu cầu
 
 - Python 3.10+ (khuyến nghị 3.11+), Node.js 18+ và npm
 - Tesseract OCR (ngôn ngữ `vie`) + Poppler — chỉ cần khi chạy lại ingestion cho PDF ảnh
-- Docker Desktop — chỉ cần nếu muốn chạy Neo4j thật (không bắt buộc, có fallback)
+- Docker Desktop — chạy Neo4j Community (hoặc cấu hình `GRAPH_BACKEND=mock` nếu chạy offline / test nhanh)
 - RAM ≥ 8GB khuyến nghị (reranker `bge-reranker-v2-m3` ~2.3GB)
 
 ## Cấu hình (.env)
@@ -67,14 +67,24 @@ Tạo `backend/.env` từ mẫu [backend/.env.example](backend/.env.example). T�
 GEMINI_API_KEY=your_key_here
 ```
 
-Các feature flag (mặc định bật hết, có thể tắt để nhẹ):
+Các feature flag và cấu hình Knowledge Graph backend:
 
 ```env
 ENABLE_DEID=true
 ENABLE_GRAPH=true
-ENABLE_RERANKER=true        # tắt (false) nếu máy yếu / không muốn tải 2.3GB
+
+# ============================================
+# Knowledge Graph Backend:
+# "neo4j" : Kết nối Neo4j qua Docker (chuẩn Production / Dev nghiêm ngặt, fail-fast nếu mất kết nối)
+# "mock"  : Dùng đồ thị in-memory từ seed y khoa (phù hợp Unit Test, CI/CD, hoặc dev offline không cần Docker)
+# "none"  : Tắt hoàn toàn tầng GraphRAG
+# ============================================
+GRAPH_BACKEND=neo4j
+# Mặc định false: không tự fallback ngầm để tránh che giấu lỗi hạ tầng
+GRAPH_INMEMORY_FALLBACK=false
+
+ENABLE_RERANKER=true          # tắt (false) nếu máy yếu / không muốn tải reranker 2.3GB
 ENABLE_FACTCHECK=true
-GRAPH_INMEMORY_FALLBACK=true
 DEFAULT_MODEL=gemini-3.5-flash
 ```
 
@@ -84,7 +94,19 @@ DEFAULT_MODEL=gemini-3.5-flash
 
 ## Chạy project
 
-### 1) Backend
+### 1) Khởi động Neo4j (Khuyến nghị cho Production & Dev chuẩn)
+
+```powershell
+docker compose up -d neo4j      # từ thư mục gốc dự án
+cd backend
+python scripts/build_graph.py   # nạp đồ thị y khoa seed vào Neo4j
+```
+
+> **Mẹo (Offline / Quick Dev)**: Nếu muốn test nhanh UI hoặc chạy trên máy không cài Docker, bạn chỉ cần đặt `GRAPH_BACKEND=mock` trong file `backend/.env`. Backend sẽ tự nạp đồ thị tri thức in-memory mà không báo lỗi kết nối.
+
+Neo4j Browser: `http://localhost:7474` (user `neo4j` / pass `medicalrag`).
+
+### 2) Backend
 
 ```powershell
 cd backend
@@ -95,17 +117,7 @@ python main.py
 ```
 
 API mặc định: `http://127.0.0.1:8001`. Lần chạy đầu sẽ tải embedding
-`vietnamese-sbert` (~500MB) và (nếu bật) reranker (~2.3GB).
-
-### 2) Neo4j Knowledge Graph (tuỳ chọn — không có vẫn chạy bằng in-memory)
-
-```powershell
-docker compose up -d neo4j      # từ thư mục gốc dự án
-cd backend
-python scripts/build_graph.py   # nạp đồ thị y khoa seed vào Neo4j
-```
-
-Neo4j Browser: `http://localhost:7474` (user `neo4j` / pass `medicalrag`).
+`vietnamese-sbert` (~500MB) và (nếu bật) reranker (~2.3GB). Khi khởi động, backend sẽ kiểm tra kết nối Knowledge Graph ngay lập tức (fail-fast).
 
 ### 3) Frontend
 
@@ -117,37 +129,61 @@ npm run dev
 
 UI theo URL Vite in ra (thường `http://127.0.0.1:5173`).
 
-## Web app (Auth, Lịch sử, Save box, Admin, Profile)
+## Giao diện & Tính năng Ứng dụng
 
-- **Đăng nhập/Đăng ký** (JWT + bcrypt). Admin mặc định: `admin@medrag.local` / `admin123` (đổi ngay trong `.env`).
-- **Lịch sử chat theo account** (SQLite) + **left sidebar** liệt kê hội thoại.
-- **Save box**: user upload tài liệu riêng (PDF/TXT/MD) → embed vào RAG, bật/tắt từng tài liệu; truy xuất chỉ dùng tài liệu hệ thống + tài liệu riêng đang bật (cô lập theo user).
-- **Admin**: quản lý tài liệu gốc hệ thống (thêm/bật/tắt/xoá), danh sách người dùng, dashboard hoạt động (số liệu, log, bám nguồn TB).
-- **Profile**: hồ sơ (chuyên khoa, yêu cầu riêng) được chèn vào prompt để cá nhân hoá.
-- DB: `backend/data/app.db` (tự tạo). Endpoint auth cần header `Authorization: Bearer <token>`.
+- **Xác thực người dùng**: Đăng nhập/Đăng ký với JWT và bcrypt. Tài khoản Admin mặc định: `admin@medrag.local` / `admin123` (cần đổi trong `.env`).
+- **Phòng khám Bác sĩ (Chat RAG)**: SSE streaming câu trả lời kèm pipeline trace 7 tầng, hiển thị tỷ lệ bám nguồn (Med-FactCheck) và cảnh báo nguy cơ ảo giác theo thời gian thực.
+- **Lịch sử hội thoại**: Tự động lưu theo từng tài khoản trên SQLite, quản lý danh sách chat tại left sidebar.
+- **Save box (Hộp tài liệu cá nhân)**: Bác sĩ tự tải lên tài liệu riêng (PDF/TXT/MD), hệ thống tự động băm nhỏ và nhúng vector. Bác sĩ có thể linh hoạt bật/tắt từng tài liệu để phục vụ ca bệnh cụ thể mà vẫn bảo đảm tính cô lập dữ liệu.
+- **Hồ sơ cá nhân (Profile)**: Cấu hình thông tin chuyên khoa và ngữ cảnh làm việc để hệ thống cá nhân hóa câu trả lời.
+- **Điều hướng URL Hash**: Hỗ trợ đồng bộ URL và duy trì trạng thái khi refresh trình duyệt (`#chat`, `#savebox`, `#profile`, `#admin/dashboard`, `#admin/chats`, `#admin/auth-logs`, `#admin/docs`, `#admin/users`).
 
-## API
+### Cổng Quản trị Hệ thống Y tế (Admin Portal)
+
+Dành riêng cho Super Admin (`role: admin`) với thanh điều hướng `AdminSidebar` chuyên biệt và nút chuyển đổi nhanh về Phòng khám:
+
+1. **Dashboard Phân tích Toàn diện & Biểu đồ Trực quan**:
+   - **Thẻ KPI an toàn**: Tổng người dùng, tài liệu hệ thống vs tài liệu bác sĩ, tổng truy vấn lâm sàng và Tỷ lệ bám nguồn trung bình.
+   - **Biểu đồ Donut Fact-Check**: Phân bổ mức độ bám nguồn y văn theo 3 ngưỡng an toàn:
+     - 🟢 **Đạt chuẩn y văn (≥ 70%)**: Câu trả lời bám sát tài liệu nguồn.
+     - 🟡 **Cần lưu ý (40% - 69%)**: Một số luận điểm cần đối chiếu thêm.
+     - 🔴 **Nguy cơ ảo giác (< 40%)**: Cảnh báo cần rà soát lại thông tin.
+   - **Biểu đồ Phân bổ Tri thức (Knowledge Graph Ontology)**: Thống kê số lượng thực thể theo chuyên mục y khoa (Bệnh lý, Nhóm thuốc, Thuốc, Tác dụng phụ, Biến chứng, Xét nghiệm).
+   - **Biểu đồ Cột Xu hướng 14 ngày**: Theo dõi khối lượng truy vấn lâm sàng hàng ngày và diễn biến tỷ lệ bám nguồn trung bình.
+   - **Biểu đồ Tải & Hạn mức Mô hình**: Giám sát phân bổ lưu lượng giữa các model LLM.
+2. **Giám sát Truy vấn Lâm sàng & Lọc Ảo giác (Fact-Check Logs)**:
+   - Theo dõi chi tiết từng câu hỏi của bác sĩ, mô hình xử lý, nhãn bám nguồn và thời gian.
+   - Bộ lọc nhanh theo mức độ an toàn (Tất cả, Đạt chuẩn ≥70%, Cần lưu ý, Nguy cơ ảo giác <40%) cùng ô tìm kiếm từ khóa.
+3. **Nhật ký Xác thực & Bảo mật (Auth & Security Audit Logs)**:
+   - Giám sát các sự kiện đăng nhập, đăng ký tài khoản và nạp tài liệu với đầy đủ dấu vết thời gian.
+4. **Quản lý Tài liệu Gốc Hệ thống (System Documents)**:
+   - Nạp các phác đồ điều trị Bộ Y tế dùng chung cho toàn bộ hệ thống; hỗ trợ bật/tắt tạm dừng truy xuất hoặc xoá tài liệu.
+5. **Quản lý Bác sĩ & Người dùng (User Management)**:
+   - Danh sách tài khoản, vai trò, chuyên khoa công tác, số lượng hội thoại và tổng số lượt hỏi đáp lâm sàng.
+
+## API Endpoints
 
 | Method | Endpoint | Mô tả |
 |---|---|---|
-| GET | `/api/health` | Trạng thái + feature flags đang bật |
-| GET | `/api/models` | Danh sách model + usage theo ngày |
-| GET | `/api/pipeline/info` | Mô tả 7 tầng pipeline (cho UI) |
-| POST | `/api/chat` | Hỏi đáp RAG (non-stream, JSON đầy đủ: answer, citations, pipeline) |
-| POST | `/api/chat/stream` | Hỏi đáp RAG qua **SSE** (event: `pipeline` → `token*` → `done`) |
+| GET | `/api/health` | Trạng thái hệ thống, pipeline và backend Knowledge Graph đang dùng (`neo4j` / `mock` / `none`) |
+| GET | `/api/models` | Danh sách model Gemini và hạn mức sử dụng trong ngày |
+| GET | `/api/pipeline/info` | Thông tin 7 tầng xử lý trong kiến trúc RAG |
+| POST | `/api/chat` | Hỏi đáp RAG non-streaming (JSON: answer, citations, pipeline trace, factcheck) |
+| POST | `/api/chat/stream` | Hỏi đáp RAG thời gian thực qua **SSE** (events: `pipeline` → `token` → `done`) |
+| GET | `/api/admin/activity` | Thống kê KPI, biểu đồ Donut grounding, timeline 14 ngày, ontology KG, log truy vấn và log xác thực |
+| GET | `/api/admin/docs` | Danh sách tài liệu gốc hệ thống |
+| POST | `/api/admin/docs` | Upload tài liệu gốc hệ thống (.pdf, .txt, .md) |
+| PATCH | `/api/admin/docs/{id}/toggle` | Bật/tắt tài liệu hệ thống |
+| DELETE | `/api/admin/docs/{id}` | Xoá tài liệu hệ thống |
+| GET | `/api/admin/users` | Danh sách người dùng, vai trò và chuyên khoa |
 
-Body `POST /api/chat[/stream]`:
+## Thư mục Dữ liệu
 
-```json
-{ "message": "Metformin chống chỉ định khi nào?", "model": "gemini-3.5-flash", "api_key": "" }
-```
+- `backend/data/` — Tài liệu y khoa mẫu và cơ sở dữ liệu `app.db`
+- `backend/vector_db/` — Vector DB đã nhúng sẵn (xóa đi nếu muốn build lại toàn bộ)
 
-## Thư mục dữ liệu
+## Bảo mật & Khử định danh
 
-- `backend/data/` — PDF/TXT đầu vào
-- `backend/vector_db/` — Vector DB (đã build sẵn; xoá đi để ingestion build lại)
+- `backend/.env` nằm trong `.gitignore` — **tuyệt đối không commit API key**.
+- Toàn bộ thông tin định danh y tế (PHI) của bệnh nhân được khử định danh bằng regex/pattern tiếng Việt tại local trước khi gửi tới LLM, và chỉ khôi phục token ở môi trường nội bộ.
 
-## Bảo mật
-
-- `backend/.env` đã nằm trong `.gitignore` — **không commit API key**.
-- PHI được ẩn danh trước khi gửi LLM và chỉ khôi phục ở môi trường local.

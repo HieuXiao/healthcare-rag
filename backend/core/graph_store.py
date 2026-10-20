@@ -27,7 +27,7 @@ class GraphContext:
     entities: List[str] = field(default_factory=list)
     triples: List[Tuple[str, str, str]] = field(default_factory=list)
     text: str = ""
-    backend: str = "none"       # "neo4j" | "in-memory" | "none"
+    backend: str = "none"       # "neo4j" | "mock" | "none"
     available: bool = False
 
 
@@ -45,17 +45,44 @@ class GraphStore:
         with self._lock:
             if self._initialized:
                 return
-            if not config.ENABLE_GRAPH:
+
+            if not config.ENABLE_GRAPH or config.GRAPH_BACKEND in ("none", "off", "false", "0"):
                 self._backend = "none"
                 self._initialized = True
+                print("[Graph] [OFF] Knowledge Graph da tat (GRAPH_BACKEND=none hoac ENABLE_GRAPH=false).")
                 return
-            self._try_connect_neo4j()
-            if self._driver is None and config.GRAPH_INMEMORY_FALLBACK:
-                self._backend = "in-memory"
-                print("[Graph] Dùng Knowledge Graph in-memory (fallback).")
+
+            # Chế độ Mock / In-memory có chủ đích
+            if config.GRAPH_BACKEND in ("mock", "in-memory", "memory"):
+                self._backend = "mock"
+                self._initialized = True
+                print("[Graph] [MOCK] Dang chay che do MOCK GRAPH (In-memory tu graph_seed).")
+                print("       -> Dung du lieu mau co dinh cho Unit Test, CI/CD hoac Offline Dev.")
+                return
+
+            # Chế độ Neo4j chuẩn Production / Dev nghiêm ngặt
+            if config.GRAPH_BACKEND == "neo4j":
+                connected = self._try_connect_neo4j()
+                if not connected:
+                    if config.GRAPH_INMEMORY_FALLBACK:
+                        self._backend = "mock"
+                        print("[Graph] [WARN] CANH BAO: Khong ket noi duoc Neo4j. Chuyen sang MOCK In-memory vi GRAPH_INMEMORY_FALLBACK=true.")
+                    else:
+                        self._backend = "none"
+                        self._initialized = True
+                        raise RuntimeError(
+                            f"\n[Graph Error] Khong the ket noi Neo4j tai {config.NEO4J_URI}!\n"
+                            f"-> Hay bat container Neo4j: 'docker compose up -d neo4j'\n"
+                            f"-> Hoac neu muon dev nhanh/offline ma khong can database, hay dat GRAPH_BACKEND=mock trong backend/.env\n"
+                        )
+
             self._initialized = True
 
-    def _try_connect_neo4j(self):
+    def initialize(self):
+        """Khởi tạo ngay lập tức khi ứng dụng khởi động (Fail-fast check)."""
+        self._ensure_init()
+
+    def _try_connect_neo4j(self) -> bool:
         try:
             from neo4j import GraphDatabase
 
@@ -67,16 +94,18 @@ class GraphStore:
             # Kiểm tra đã có dữ liệu chưa.
             with driver.session(database=config.NEO4J_DATABASE) as session:
                 count = session.run("MATCH (n:Entity) RETURN count(n) AS c").single()["c"]
-            if count == 0:
-                print("[Graph] ⚠️ Neo4j rỗng — hãy chạy scripts/build_graph.py. Tạm fallback in-memory.")
-                driver.close()
-                return
             self._driver = driver
             self._backend = "neo4j"
-            print(f"[Graph] ✅ Kết nối Neo4j ({count} thực thể).")
+            if count == 0:
+                print("[Graph] [WARN] Neo4j da ket noi nhung chua co du lieu (0 thuc the).")
+                print("       -> Hay chay: 'python scripts/build_graph.py' de nap du lieu y khoa.")
+            else:
+                print(f"[Graph] [OK] Ket noi Neo4j thanh cong ({count} thuc the).")
+            return True
         except Exception as exc:  # pragma: no cover - phụ thuộc môi trường
-            print(f"[Graph] ⚠️ Không kết nối được Neo4j ({exc}).")
+            print(f"[Graph] [ERROR] Loi ket noi Neo4j ({exc}).")
             self._driver = None
+            return False
 
     # ---- entity matching ----------------------------------------------
     @staticmethod
@@ -117,7 +146,7 @@ class GraphStore:
                 for rec in session.run(cypher, names=entities, limit=config.GRAPH_MAX_TRIPLES):
                     triples.append((rec["s"], rec["r"], rec["o"]))
         except Exception as exc:  # pragma: no cover
-            print(f"[Graph] ⚠️ Lỗi truy vấn Neo4j ({exc}).")
+            print(f"[Graph] [WARN] Loi truy van Neo4j ({exc}).")
         return triples
 
     # ---- textualize ----------------------------------------------------
@@ -140,8 +169,6 @@ class GraphStore:
 
         if self._backend == "neo4j":
             triples = self._traverse_neo4j(entities)
-            if not triples:  # DB có thể thiếu quan hệ -> bù bằng seed
-                triples = self._traverse_inmemory(entities)
         else:
             triples = self._traverse_inmemory(entities)
 
