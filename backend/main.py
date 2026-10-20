@@ -21,6 +21,10 @@ async def lifespan(app: FastAPI):
     # Khởi tạo database (tạo bảng, seed admin + tài liệu gốc).
     print("Khởi tạo database...")
     init_db()
+    # Khởi tạo Knowledge Graph (fail-fast nếu backend=neo4j nhưng không kết nối được)
+    print("Khởi tạo Knowledge Graph...")
+    from core.graph_store import get_graph_store
+    get_graph_store().initialize()
     # Khởi động RAG pipeline mặc định với API key hệ thống.
     print("Khởi động Medical RAG Pipeline mặc định...")
     app.state.pipeline = initialize_default_pipeline()

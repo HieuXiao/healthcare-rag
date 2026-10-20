@@ -7,10 +7,10 @@ from datetime import date, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
-from core import auth, services
+from core import auth, graph_seed, services
 from core.db import BASE_INDEX_MARKER, UPLOAD_DIR, get_db
 from core.models import ActivityLog, Conversation, Document, Message, User
 
@@ -121,6 +121,8 @@ def activity(admin: User = Depends(auth.require_admin), db: Session = Depends(ge
     total_users = db.query(func.count(User.id)).scalar()
     total_chats = db.query(func.count(ActivityLog.id)).filter(ActivityLog.action == "chat").scalar()
     total_docs = db.query(func.count(Document.id)).scalar()
+    system_docs = db.query(func.count(Document.id)).filter(Document.scope == "system").scalar()
+    user_docs = db.query(func.count(Document.id)).filter(Document.scope == "user").scalar()
 
     today = date.today().isoformat()
     chats_today = db.query(func.count(ActivityLog.id)).filter(
@@ -135,6 +137,84 @@ def activity(admin: User = Depends(auth.require_admin), db: Session = Depends(ge
     per_model = db.query(ActivityLog.model, func.count(ActivityLog.id)).filter(
         ActivityLog.action == "chat").group_by(ActivityLog.model).all()
 
+    # Phân bổ bám nguồn lâm sàng (Fact-Check Distribution)
+    # High (>= 0.7: Đạt chuẩn y văn), Medium (0.4 - 0.69: Cần lưu ý), Low (< 0.4: Cảnh báo ảo giác)
+    all_chat_grounding = db.query(ActivityLog.grounded_ratio).filter(
+        ActivityLog.action == "chat", ActivityLog.grounded_ratio.isnot(None)).all()
+    grounding_dist = {"high": 0, "medium": 0, "low": 0}
+    for (gr,) in all_chat_grounding:
+        if gr >= 0.7:
+            grounding_dist["high"] += 1
+        elif gr >= 0.4:
+            grounding_dist["medium"] += 1
+        else:
+            grounding_dist["low"] += 1
+
+    # Xu hướng theo ngày (Timeline)
+    daily_stats = db.query(
+        func.substr(ActivityLog.created_at, 1, 10).label("day"),
+        func.count(ActivityLog.id).label("total"),
+        func.sum(case((ActivityLog.action == "chat", 1), else_=0)).label("chats"),
+        func.avg(ActivityLog.grounded_ratio).label("avg_ground")
+    ).group_by("day").order_by("day").limit(14).all()
+
+    timeline = []
+    for d, total, chats, ag in daily_stats:
+        timeline.append({
+            "date": d,
+            "total_actions": total,
+            "chats": chats or 0,
+            "avg_grounded": round(float(ag) * 100, 1) if ag is not None else 0,
+        })
+
+    # Phân loại thực thể Knowledge Graph
+    entity_types = {}
+    for meta in graph_seed.ENTITIES.values():
+        t = meta.get("type", "Khác")
+        entity_types[t] = entity_types.get(t, 0) + 1
+
+    graph_stats = {
+        "total_entities": len(graph_seed.ENTITIES),
+        "total_triples": len(graph_seed.TRIPLES),
+        "entity_types": [{"type": k, "count": v} for k, v in entity_types.items()],
+    }
+
+    # 1. Tách riêng Chat logs (Truy vấn lâm sàng)
+    chat_logs_query = db.query(ActivityLog).filter(
+        ActivityLog.action == "chat"
+    ).order_by(ActivityLog.created_at.desc()).limit(50).all()
+
+    chat_logs = []
+    for r in chat_logs_query:
+        u = db.query(User).filter(User.id == r.user_id).first()
+        chat_logs.append({
+            "id": r.id,
+            "user": u.username if u else "—",
+            "user_email": u.email if u else "—",
+            "query": r.detail or "—",
+            "model": r.model or "—",
+            "grounded_ratio": r.grounded_ratio,
+            "created_at": r.created_at.isoformat() if r.created_at else "",
+        })
+
+    # 2. Tách riêng Auth & Security logs (Đăng nhập, đăng ký, upload)
+    auth_logs_query = db.query(ActivityLog).filter(
+        ActivityLog.action != "chat"
+    ).order_by(ActivityLog.created_at.desc()).limit(50).all()
+
+    auth_logs = []
+    for r in auth_logs_query:
+        u = db.query(User).filter(User.id == r.user_id).first()
+        auth_logs.append({
+            "id": r.id,
+            "action": r.action,
+            "user": u.username if u else "—",
+            "user_email": u.email if u else "—",
+            "detail": r.detail or "—",
+            "created_at": r.created_at.isoformat() if r.created_at else "",
+        })
+
+    # Toàn bộ recent (để tương thích ngược)
     recent = db.query(ActivityLog).order_by(ActivityLog.created_at.desc()).limit(30).all()
     recent_out = []
     for r in recent:
@@ -149,10 +229,20 @@ def activity(admin: User = Depends(auth.require_admin), db: Session = Depends(ge
 
     return {
         "stats": {
-            "total_users": total_users, "total_chats": total_chats,
-            "total_documents": total_docs, "chats_today": chats_today,
+            "total_users": total_users,
+            "total_chats": total_chats,
+            "total_documents": total_docs,
+            "system_documents": system_docs,
+            "user_documents": user_docs,
+            "chats_today": chats_today,
             "avg_grounded_ratio": round(float(avg_ground), 3) if avg_ground is not None else None,
         },
         "per_model": [{"model": m or "—", "count": c} for m, c in per_model],
+        "grounding_dist": grounding_dist,
+        "timeline": timeline,
+        "graph_stats": graph_stats,
+        "chat_logs": chat_logs,
+        "auth_logs": auth_logs,
         "recent": recent_out,
     }
+

@@ -10,12 +10,15 @@ router = APIRouter(tags=["meta"])
 
 @router.get("/health")
 def health(request: Request):
+    from core.graph_store import get_graph_store
+    store = get_graph_store()
     return {
         "status": "ok",
         "pipeline_ready": getattr(request.app.state, "pipeline", None) is not None,
         "features": {
             "deid": config.ENABLE_DEID,
             "graph": config.ENABLE_GRAPH,
+            "graph_backend": store._backend,
             "reranker": config.ENABLE_RERANKER,
             "factcheck": config.ENABLE_FACTCHECK,
         },
@@ -31,7 +34,7 @@ def pipeline_info():
             {"id": "route", "name": "Intent Router", "enabled": True,
              "desc": "Phân luồng Phác đồ (GraphRAG) / Bệnh án (Hybrid)"},
             {"id": "graph", "name": "Knowledge Graph", "enabled": config.ENABLE_GRAPH,
-             "desc": "Entity Matching → Traversal → Triple Textualization (Neo4j/in-memory)"},
+             "desc": f"Entity Matching → Traversal → Triple Textualization ({config.GRAPH_BACKEND})"},
             {"id": "retrieve", "name": "Hybrid Retrieval", "enabled": True,
              "desc": "Vector + BM25 → RRF → Rerank (bge-reranker-v2-m3)"},
             {"id": "generate", "name": "LLM Generation", "enabled": True,
