@@ -229,7 +229,6 @@ export default function Workspace({ theme, toggleTheme }) {
         <div className="main-body">
           {view === 'chat' && (
             <ChatView
-              key={activeConvId || 'new'}
               conversationId={activeConvId}
               selectedModel={selectedModel}
               onConversationStarted={onConversationStarted}
