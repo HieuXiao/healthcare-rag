@@ -68,6 +68,20 @@ SYSTEM_RULES = (
     "5. Trình bày rõ ràng, có cấu trúc, ưu tiên gạch đầu dòng khi phù hợp.\n"
 )
 
+CHITCHAT_SYSTEM_RULES = (
+    "Bạn là Trợ lý Y tế AI (Healthcare RAG) chuyên nghiệp, đồng hành cùng bác sĩ và nhân viên y tế.\n"
+    "Người dùng đang gửi lời chào hỏi, cảm ơn, hoặc hỏi về bản thân và khả năng hỗ trợ của bạn.\n"
+    "HÃY TUÂN THỦ CÁC QUY TẮC:\n"
+    "1. Trả lời bằng tiếng Việt, giọng điệu thân thiện, chuẩn mực, tôn trọng người dùng.\n"
+    "2. Xưng hô: Gọi người dùng là 'Bác sĩ' (hoặc 'Anh/Chị'), xưng 'Tôi' hoặc 'Trợ lý Y tế'.\n"
+    "3. Khi được hỏi 'bạn là ai / bạn là gì / bạn có thể làm được gì', hãy giới thiệu rõ ràng 3 năng lực cốt lõi:\n"
+    "   - 📚 Tra cứu phác đồ điều trị chuẩn của Bộ Y tế và y văn lâm sàng.\n"
+    "   - 🕸️ Đối chiếu chỉ định, chống chỉ định và tương tác thuốc dựa trên Knowledge Graph.\n"
+    "   - 📋 Phân tích, tóm tắt hồ sơ bệnh án (SOAP) và tài liệu cá nhân trong Save box.\n"
+    "4. KHÔNG tự bịa các số trích dẫn nguồn [1], [2] vì đây là hội thoại chào hỏi, không có tài liệu y văn đi kèm.\n"
+    "5. Giữ câu trả lời súc tích, ngắn gọn (tối đa 3-4 câu), kết thúc bằng lời mời Bác sĩ nhập câu hỏi hoặc ca bệnh cần tra cứu."
+)
+
 SAFETY_FOOTER = (
     "⚠️ Thông tin mang tính hỗ trợ tham khảo cho nhân viên y tế, không thay thế chẩn đoán "
     "và chỉ định trực tiếp của bác sĩ điều trị."
@@ -97,6 +111,14 @@ def _build_prompt(query: str, context_block: str, graph_text: str, profile_text:
     if graph_text:
         parts += ["\n\n===== TRI THỨC KG =====\n", graph_text]
     parts += ["\n\n===== CÂU HỎI =====\n", query, "\n\n===== TRẢ LỜI =====\n"]
+    return "".join(parts)
+
+
+def _build_chitchat_prompt(query: str, profile_text: str = "") -> str:
+    parts = [CHITCHAT_SYSTEM_RULES]
+    if profile_text:
+        parts += ["\n\n===== HỒ SƠ NGƯỜI DÙNG HIỆN TẠI =====\n", profile_text]
+    parts += ["\n\n===== TIN NHẮN CỦA BÁC SĨ =====\n", query, "\n\n===== PHẢN HỒI =====\n"]
     return "".join(parts)
 
 
@@ -131,10 +153,27 @@ class RAGPipeline:
         # 2. Route
         decision = intent_router.route(clean_query)
 
-        # 3. Graph context
+        # 3. Phân luồng: Nếu là CHITCHAT (chào hỏi, hỏi danh tính) -> Bỏ qua truy xuất y văn và KG
+        if decision.intent == intent_router.CHITCHAT:
+            from core.graph_store import GraphContext
+            from core.hybrid_retriever import RetrievalResult
+            prompt = _build_chitchat_prompt(clean_query, profile_text)
+            return {
+                "clean_query": clean_query,
+                "phi_map": phi_map,
+                "phi_counts": phi_counts,
+                "route": decision,
+                "graph": GraphContext(available=False, backend="none"),
+                "retrieval": RetrievalResult(nodes=[], method="none", reranked=False, stats={}),
+                "context_block": "",
+                "prompt": prompt,
+                "prep_seconds": round(time.perf_counter() - t0, 3),
+            }
+
+        # 4. Graph context (cho luồng lâm sàng)
         graph_ctx = get_graph_store().query(clean_query)
 
-        # 4. Retrieve (có lọc theo quyền truy cập tài liệu của user)
+        # 5. Retrieve (có lọc theo quyền truy cập tài liệu của user)
         retrieval = get_retriever().retrieve(
             clean_query, allowed_keys=allowed_keys, base_allowed=base_allowed
         )
@@ -241,18 +280,21 @@ class RAGPipeline:
         resp = self._complete_with_retry(prep["prompt"])
         answer = str(resp).strip()
 
-        # Factcheck trên văn bản đã khử định danh
-        ctx_texts = [n.get("text", "") for n in prep["retrieval"].nodes]
-        fc = factcheck.check(answer, ctx_texts)
+        is_chitchat = prep["route"].intent == intent_router.CHITCHAT
+        if is_chitchat:
+            fc = factcheck.FactCheckResult(grounded_ratio=None, passed=True, note="Hội thoại chào hỏi / xã giao", unsupported=[])
+        else:
+            ctx_texts = [n.get("text", "") for n in prep["retrieval"].nodes]
+            fc = factcheck.check(answer, ctx_texts)
 
         # Re-identify
         if config.ENABLE_DEID and prep["phi_map"]:
             answer = deidentify.default_deidentifier.reidentify(answer, prep["phi_map"])
 
-        answer = answer + "\n\n" + SAFETY_FOOTER
+        final_answer = answer if is_chitchat else (answer + "\n\n" + SAFETY_FOOTER)
 
         meta = self._pipeline_meta(prep)
-        meta["factcheck"] = {
+        meta["factcheck"] = None if is_chitchat else {
             "grounded_ratio": fc.grounded_ratio,
             "passed": fc.passed,
             "note": fc.note,
@@ -260,8 +302,8 @@ class RAGPipeline:
         }
 
         return {
-            "answer": answer,
-            "sources": self._sources_payload(prep["retrieval"]),
+            "answer": final_answer,
+            "sources": [] if is_chitchat else self._sources_payload(prep["retrieval"]),
             "pipeline": meta,
         }
 
@@ -283,6 +325,7 @@ class RAGPipeline:
 
         yield {"type": "pipeline", "data": self._pipeline_meta(prep)}
 
+        is_chitchat = prep["route"].intent == intent_router.CHITCHAT
         collected: List[str] = []
         try:
             for chunk in self._stream_with_retry(prep["prompt"]):
@@ -303,19 +346,24 @@ class RAGPipeline:
             return
 
         full_answer = "".join(collected).strip()
-        ctx_texts = [n.get("text", "") for n in prep["retrieval"].nodes]
-        fc = factcheck.check(full_answer, ctx_texts)
+        if is_chitchat:
+            fc = factcheck.FactCheckResult(grounded_ratio=None, passed=True, note="Hội thoại chào hỏi / xã giao", unsupported=[])
+        else:
+            ctx_texts = [n.get("text", "") for n in prep["retrieval"].nodes]
+            fc = factcheck.check(full_answer, ctx_texts)
 
         if config.ENABLE_DEID and prep["phi_map"]:
             full_answer = deidentify.default_deidentifier.reidentify(full_answer, prep["phi_map"])
 
+        final_answer = full_answer if is_chitchat else (full_answer + "\n\n" + SAFETY_FOOTER)
+
         yield {
             "type": "done",
             "data": {
-                "answer": full_answer + "\n\n" + SAFETY_FOOTER,
-                "safety_footer": SAFETY_FOOTER,
-                "sources": self._sources_payload(prep["retrieval"]),
-                "factcheck": {
+                "answer": final_answer,
+                "safety_footer": "" if is_chitchat else SAFETY_FOOTER,
+                "sources": [] if is_chitchat else self._sources_payload(prep["retrieval"]),
+                "factcheck": None if is_chitchat else {
                     "grounded_ratio": fc.grounded_ratio,
                     "passed": fc.passed,
                     "note": fc.note,
