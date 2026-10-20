@@ -18,6 +18,29 @@ export default function Sidebar({
         </button>
       </div>
 
+      {/* Banner Cổng Quản trị nổi bật cho Admin */}
+      {user?.role === 'admin' && (
+        <div className="admin-portal-launcher">
+          <button
+            className="admin-launcher-btn"
+            onClick={() => onNavigate('admin')}
+            title="Mở Cổng Quản trị Hệ thống"
+          >
+            <div className="launcher-badge">ADMIN</div>
+            <div className="launcher-main">
+              <span className="launcher-icon">🛡️</span>
+              {!collapsed && (
+                <div className="launcher-text">
+                  <span className="launcher-title">Cổng Quản trị Hệ thống</span>
+                  <span className="launcher-sub">Dashboard · Users · Tri thức</span>
+                </div>
+              )}
+            </div>
+            {!collapsed && <span className="launcher-arrow">➔</span>}
+          </button>
+        </div>
+      )}
+
       <button className="new-chat-btn" onClick={onNewChat} title="Cuộc trò chuyện mới">
         <span>＋</span>{!collapsed && <span>Cuộc trò chuyện mới</span>}
       </button>

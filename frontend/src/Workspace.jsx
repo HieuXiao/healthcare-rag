@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from './api.js';
 import { useAuth } from './auth.jsx';
 import Sidebar from './Sidebar.jsx';
+import AdminSidebar from './AdminSidebar.jsx';
 import ChatView from './ChatView.jsx';
 import SaveBox from './SaveBox.jsx';
 import AdminPanel from './AdminPanel.jsx';
@@ -16,15 +17,100 @@ const VIEW_TITLES = {
   profile: 'Hồ sơ cá nhân',
 };
 
+const ADMIN_TITLES = {
+  dashboard: 'Quản trị hệ thống — Tổng quan & Biểu đồ y khoa',
+  chats: 'Quản trị hệ thống — Nhật ký Truy vấn & Bám nguồn',
+  'auth-logs': 'Quản trị hệ thống — Lịch sử Xác thực & Bảo mật',
+  docs: 'Quản trị hệ thống — Tài liệu gốc hệ thống',
+  users: 'Quản trị hệ thống — Quản lý người dùng',
+};
+
+function parseHash(userRole) {
+  try {
+    const raw = window.location.hash.replace(/^#\/?/, '').trim();
+    if (!raw) return null;
+    const parts = raw.split('/');
+    const mainView = parts[0];
+    const subTab = parts[1];
+    const validViews = ['chat', 'savebox', 'profile', 'admin'];
+    if (validViews.includes(mainView)) {
+      if (mainView === 'admin' && userRole !== 'admin') {
+        return { view: 'chat', adminTab: 'dashboard' };
+      }
+      const validAdminTabs = ['dashboard', 'chats', 'auth-logs', 'docs', 'users'];
+      const resolvedAdminTab = validAdminTabs.includes(subTab) ? subTab : 'dashboard';
+      return { view: mainView, adminTab: resolvedAdminTab };
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+function getInitialViewState(userRole) {
+  // 1. Ưu tiên URL Hash (khi F5 hoặc mở link trực tiếp)
+  const fromHash = parseHash(userRole);
+  if (fromHash) return fromHash;
+
+  // 2. Fallback sang localStorage
+  try {
+    const savedView = localStorage.getItem('medrag-active-view');
+    const savedTab = localStorage.getItem('medrag-admin-tab') || 'dashboard';
+    const validViews = ['chat', 'savebox', 'profile', 'admin'];
+    if (savedView && validViews.includes(savedView)) {
+      if (savedView === 'admin' && userRole !== 'admin') {
+        return { view: 'chat', adminTab: 'dashboard' };
+      }
+      return { view: savedView, adminTab: savedTab };
+    }
+  } catch { /* ignore */ }
+
+  return { view: 'chat', adminTab: 'dashboard' };
+}
+
 export default function Workspace({ theme, toggleTheme }) {
   const { user, logout } = useAuth();
-  const [view, setView] = useState('chat');
+  const initial = getInitialViewState(user?.role);
+  const [view, setView] = useState(initial.view);
+  const [adminTab, setAdminTab] = useState(initial.adminTab);
   const [collapsed, setCollapsed] = useState(false);
   const [conversations, setConversations] = useState([]);
   const [activeConvId, setActiveConvId] = useState(null);
   const [modelStats, setModelStats] = useState([]);
   const [selectedModel, setSelectedModel] = useState(FALLBACK_MODELS[0]);
   const [userMenu, setUserMenu] = useState(false);
+
+  // Cập nhật view và lưu vào hash + localStorage
+  const updateRoute = useCallback((newView, newAdminTab = adminTab) => {
+    setView(newView);
+    setAdminTab(newAdminTab);
+    try {
+      localStorage.setItem('medrag-active-view', newView);
+      if (newView === 'admin') {
+        localStorage.setItem('medrag-admin-tab', newAdminTab);
+        window.history.replaceState(null, '', `#admin/${newAdminTab}`);
+      } else {
+        window.history.replaceState(null, '', `#${newView}`);
+      }
+    } catch { /* ignore */ }
+  }, [adminTab]);
+
+  // Đồng bộ hash URL lúc mount và khi người dùng bấm Back/Forward trình duyệt
+  useEffect(() => {
+    if (view === 'admin') {
+      window.history.replaceState(null, '', `#admin/${adminTab}`);
+    } else {
+      window.history.replaceState(null, '', `#${view}`);
+    }
+
+    const onHashChange = () => {
+      const parsed = parseHash(user?.role);
+      if (parsed) {
+        setView(parsed.view);
+        setAdminTab(parsed.adminTab);
+      }
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -48,8 +134,8 @@ export default function Workspace({ theme, toggleTheme }) {
 
   useEffect(() => { loadConversations(); loadModels(); }, [loadConversations, loadModels]);
 
-  const handleNewChat = () => { setActiveConvId(null); setView('chat'); };
-  const handleSelectConv = (id) => { setActiveConvId(id); setView('chat'); };
+  const handleNewChat = () => { setActiveConvId(null); updateRoute('chat'); };
+  const handleSelectConv = (id) => { setActiveConvId(id); updateRoute('chat'); };
   const handleDeleteConv = async (id) => {
     if (!window.confirm('Xoá cuộc trò chuyện này?')) return;
     try { await api.deleteConversation(id); } catch { /* ignore */ }
@@ -64,23 +150,49 @@ export default function Workspace({ theme, toggleTheme }) {
 
   const currentUsage = modelStats.find((m) => m.name === selectedModel)?.usage_percent ?? 0;
 
+  const handleNavigate = (v) => {
+    if (v === 'admin') {
+      updateRoute('admin', adminTab || 'dashboard');
+    } else {
+      updateRoute(v);
+    }
+  };
+
+  const handleSelectAdminTab = (tabName) => {
+    updateRoute('admin', tabName);
+  };
+
+  const isCurrentAdmin = view === 'admin' && user?.role === 'admin';
+  const currentTitle = isCurrentAdmin ? (ADMIN_TITLES[adminTab] || 'Quản trị hệ thống') : VIEW_TITLES[view];
+
   return (
     <div className="workspace">
-      <Sidebar
-        conversations={conversations}
-        activeConvId={activeConvId}
-        view={view}
-        collapsed={collapsed}
-        onToggleCollapse={() => setCollapsed((c) => !c)}
-        onNewChat={handleNewChat}
-        onSelectConv={handleSelectConv}
-        onDeleteConv={handleDeleteConv}
-        onNavigate={setView}
-      />
+      {isCurrentAdmin ? (
+        <AdminSidebar
+          tab={adminTab}
+          onSelectTab={handleSelectAdminTab}
+          onSwitchToChat={() => handleNavigate('chat')}
+          onNavigate={handleNavigate}
+          collapsed={collapsed}
+          onToggleCollapse={() => setCollapsed((c) => !c)}
+        />
+      ) : (
+        <Sidebar
+          conversations={conversations}
+          activeConvId={activeConvId}
+          view={view}
+          collapsed={collapsed}
+          onToggleCollapse={() => setCollapsed((c) => !c)}
+          onNewChat={handleNewChat}
+          onSelectConv={handleSelectConv}
+          onDeleteConv={handleDeleteConv}
+          onNavigate={handleNavigate}
+        />
+      )}
 
       <div className="main-col">
         <header className="topbar">
-          <h2 className="topbar-title">{VIEW_TITLES[view]}</h2>
+          <h2 className="topbar-title">{currentTitle}</h2>
           <div className="topbar-controls">
             {view === 'chat' && (
               <div className="model-wrap">
@@ -103,9 +215,9 @@ export default function Workspace({ theme, toggleTheme }) {
               </button>
               {userMenu && (
                 <div className="user-dropdown" onMouseLeave={() => setUserMenu(false)}>
-                  <button onClick={() => { setView('profile'); setUserMenu(false); }}>👤 Hồ sơ</button>
-                  <button onClick={() => { setView('savebox'); setUserMenu(false); }}>📁 Save box</button>
-                  {user.role === 'admin' && <button onClick={() => { setView('admin'); setUserMenu(false); }}>🛡️ Quản trị</button>}
+                  <button onClick={() => { handleNavigate('profile'); setUserMenu(false); }}>👤 Hồ sơ</button>
+                  <button onClick={() => { handleNavigate('savebox'); setUserMenu(false); }}>📁 Save box</button>
+                  {user.role === 'admin' && <button onClick={() => { handleNavigate('admin'); setUserMenu(false); }}>🛡️ Quản trị</button>}
                   <div className="dropdown-sep" />
                   <button className="danger" onClick={logout}>🚪 Đăng xuất</button>
                 </div>
@@ -126,7 +238,9 @@ export default function Workspace({ theme, toggleTheme }) {
           )}
           {view === 'savebox' && <SaveBox />}
           {view === 'profile' && <Profile />}
-          {view === 'admin' && user.role === 'admin' && <AdminPanel />}
+          {view === 'admin' && user.role === 'admin' && (
+            <AdminPanel tab={adminTab} onSelectTab={handleSelectAdminTab} />
+          )}
         </div>
       </div>
     </div>
