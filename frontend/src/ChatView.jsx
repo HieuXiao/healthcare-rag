@@ -61,12 +61,19 @@ export default function ChatView({ conversationId, selectedModel, onConversation
           onConversationStarted?.(newId);
         }
       } else if (ev.type === 'pipeline') {
-        patchBot({ pipeline: ev.data }); setActiveStage('retrieve'); setStatus('Đã truy xuất ngữ cảnh, đang sinh câu trả lời…');
+        patchBot({ pipeline: ev.data });
+        if (ev.data?.route?.intent === 'chitchat') {
+          setActiveStage('generate');
+          setStatus('Đang phản hồi…');
+        } else {
+          setActiveStage('retrieve');
+          setStatus('Đã truy xuất ngữ cảnh, đang sinh câu trả lời…');
+        }
       } else if (ev.type === 'token') {
         gotToken = true; setActiveStage('generate');
         patchBot((m) => ({ content: (m.content || '') + ev.data }));
       } else if (ev.type === 'done') {
-        setActiveStage('factcheck');
+        setActiveStage(null);
         patchBot({ streaming: false, content: ev.data.answer || '', sources: ev.data.sources || [], factcheck: ev.data.factcheck || null });
         setStatus('Hoàn tất');
       } else if (ev.type === 'error') {

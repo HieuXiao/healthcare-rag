@@ -106,6 +106,14 @@ export function PipelineBar({ order, active }) {
 }
 
 export function RouteBadge({ route }) {
+  if (!route || !route.intent) return null;
+  if (route.intent === 'chitchat') {
+    return (
+      <span className="chip chip-chitchat" title={route.reason}>
+        💬 Trò chuyện & Hỗ trợ
+      </span>
+    );
+  }
   const isEhr = route.intent === 'ehr';
   return (
     <span className={`chip ${isEhr ? 'chip-ehr' : 'chip-guideline'}`} title={route.reason}>
@@ -115,7 +123,7 @@ export function RouteBadge({ route }) {
 }
 
 export function FactCheckBadge({ fc }) {
-  if (!fc) return null;
+  if (!fc || fc.grounded_ratio == null) return null;
   const pct = Math.round((fc.grounded_ratio ?? 0) * 100);
   const cls = fc.passed ? 'chip-ok' : 'chip-warn';
   const icon = fc.passed ? '✅' : '⚠️';
@@ -151,7 +159,7 @@ export function Citations({ sources }) {
 
 export function PipelineTrace({ pipeline }) {
   const [open, setOpen] = useState(false);
-  if (!pipeline) return null;
+  if (!pipeline || pipeline.route?.intent === 'chitchat') return null;
   const g = pipeline.graph || {};
   const r = pipeline.retrieval || {};
   const d = pipeline.deid || {};
