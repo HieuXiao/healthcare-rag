@@ -210,3 +210,10 @@ __marimo__/
 backend/data/app.db
 backend/data/app.db-journal
 backend/data/uploads/
+backend/data/model_usage.json
+
+# Vector DB: build tại máy bằng backend/scripts/rebuild_index.py, không commit
+backend/vector_db/
+backend/vector_db.tmp/
+backend/vector_db.bak/
+backend/data/vector_db/
