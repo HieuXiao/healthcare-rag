@@ -119,6 +119,31 @@ python main.py
 API mặc định: `http://127.0.0.1:8001`. Lần chạy đầu sẽ tải embedding
 `vietnamese-sbert` (~500MB) và (nếu bật) reranker (~2.3GB). Khi khởi động, backend sẽ kiểm tra kết nối Knowledge Graph ngay lập tức (fail-fast).
 
+#### Build index lần đầu
+
+Vector DB (`backend/vector_db/`) **không còn được commit** — mỗi máy tự build từ tài liệu gốc.
+Cần Tesseract OCR có gói tiếng Việt (`vie`) vì phác đồ mẫu là PDF dạng ảnh.
+
+```powershell
+cd backend
+python scripts/rebuild_index.py --from-scratch --dry-run   # xem trước số chunk, chưa ghi
+python scripts/rebuild_index.py --from-scratch             # build và ghi backend/vector_db
+```
+
+`--from-scratch` nạp file `*.pdf`/`*.txt` nằm trực tiếp trong `backend/data/` cùng các tài liệu hệ thống (admin upload) còn file; thêm `--include-user-docs` để nạp lại cả tài liệu riêng của người dùng. Index cũ được giữ lại ở `backend/vector_db.bak/`. Nếu OCR không đọc được tài liệu gốc, script dừng và không ghi đè index cũ.
+
+Bảo trì index (nên tắt backend trước khi chạy):
+
+| Lệnh | Tác dụng |
+|---|---|
+| `python scripts/rebuild_index.py --purge-orphans [--dry-run]` | Xoá node có `doc_key` không còn trong bảng `documents` (không cần tải model) |
+| `python scripts/rebuild_index.py --remove-doc ID [--remove-doc ID ...] [--dry-run]` | Xoá hẳn tài liệu: node trong index, file upload và bản ghi DB |
+| `python scripts/migrate_stored_paths.py [--dry-run]` | Migrate một lần: đổi `stored_path` dạng tuyệt đối (máy cũ) sang tên file trong `data/uploads/` |
+
+Khi khởi động, backend cảnh báo nếu chưa có Vector DB hoặc index chứa node của tài liệu không còn trong DB (không tự xoá).
+
+> Repo đã từng commit `backend/vector_db/` có 2 node dữ liệu test giả (`doc:2`, `doc:3`). Sau khi pull bản này, thư mục đó sẽ bị git xoá khỏi máy — chạy `--from-scratch` để build lại; nếu còn giữ bản cũ thì chạy `--purge-orphans`.
+
 ### 3) Frontend
 
 ```powershell
@@ -179,8 +204,13 @@ Dành riêng cho Super Admin (`role: admin`) với thanh điều hướng `Admin
 
 ## Thư mục Dữ liệu
 
-- `backend/data/` — Tài liệu y khoa mẫu và cơ sở dữ liệu `app.db`
-- `backend/vector_db/` — Vector DB đã nhúng sẵn (xóa đi nếu muốn build lại toàn bộ)
+| Đường dẫn | Nội dung | Git |
+|---|---|---|
+| `backend/data/*.pdf`, `*.txt` | Tài liệu gốc hệ thống (nguồn của `--from-scratch`) | commit |
+| `backend/data/app.db` | SQLite: người dùng, hội thoại, tài liệu | bỏ qua |
+| `backend/data/uploads/` | File tài liệu upload; `Document.stored_path` lưu **tên file tương đối** so với thư mục này | bỏ qua |
+| `backend/data/model_usage.json` | Bộ đếm lượt gọi model theo ngày | bỏ qua |
+| `backend/vector_db/` | Vector DB (LlamaIndex JSON), build bằng `scripts/rebuild_index.py` | bỏ qua |
 
 ## Bảo mật & Khử định danh
 

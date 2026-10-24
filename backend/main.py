@@ -21,6 +21,11 @@ async def lifespan(app: FastAPI):
     # Khởi tạo database (tạo bảng, seed admin + tài liệu gốc).
     print("Khởi tạo database...")
     init_db()
+    # Cảnh báo nếu Vector DB thiếu hoặc chứa node của tài liệu không còn trong DB.
+    from core.db import SessionLocal
+    from core.services import warn_if_index_inconsistent
+    with SessionLocal() as db:
+        warn_if_index_inconsistent(db)
     # Khởi tạo Knowledge Graph (fail-fast nếu backend=neo4j nhưng không kết nối được)
     print("Khởi tạo Knowledge Graph...")
     from core.graph_store import get_graph_store
