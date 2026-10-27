@@ -27,7 +27,7 @@ function Root() {
   if (loading) {
     return <div className="boot-screen"><div className="boot-spinner" />Đang tải…</div>;
   }
-  if (!user) return <AuthScreen theme={theme} toggleTheme={toggleTheme} />;
+  if (!user) return <AuthScreen />;
   return <Workspace theme={theme} toggleTheme={toggleTheme} />;
 }
 

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAuth } from './auth.jsx';
 
-export default function AuthScreen({ theme, toggleTheme }) {
+export default function AuthScreen() {
   const { login, register } = useAuth();
   const [mode, setMode] = useState('login'); // 'login' | 'register'
   const [email, setEmail] = useState('');
@@ -26,10 +26,6 @@ export default function AuthScreen({ theme, toggleTheme }) {
 
   return (
     <div className="auth-screen">
-      <button className="ctl theme-toggle auth-theme" onClick={toggleTheme} title="Sáng/tối">
-        {theme === 'dark' ? '☀️' : '🌙'}
-      </button>
-
       <div className="auth-card">
         <div className="auth-brand">
           <span className="brand-mark" aria-hidden="true">✚</span>
