@@ -20,9 +20,17 @@ Nên tắt backend trước khi chạy để tránh hai tiến trình cùng ghi 
 from __future__ import annotations
 
 import argparse
+import errno
 import shutil
 import sys
 from pathlib import Path
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 # Cho phép import package `core` khi chạy trực tiếp.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -114,6 +122,30 @@ def remove_docs(db, doc_ids, dry_run: bool) -> None:
     print(f"Đã xoá {len(docs)} tài liệu (DB + file).")
 
 
+def _swap_index_dir(target: Path, tmp_dir: Path, bak_dir: Path) -> None:
+    """Thay `target` bằng `tmp_dir`, giữ bản cũ ở `bak_dir`."""
+    if not target.exists():
+        tmp_dir.rename(target)
+        return
+    if bak_dir.exists():
+        shutil.rmtree(bak_dir)
+    try:
+        target.rename(bak_dir)
+    except OSError as exc:
+        # Trong Docker, target là bind mount: không đổi tên được chính mount point (EBUSY),
+        # hoặc tmp/bak nằm khác filesystem (EXDEV) -> chuyển nội dung bên trong thay vì đổi tên.
+        if exc.errno not in (errno.EBUSY, errno.EXDEV):
+            raise
+        bak_dir.mkdir()
+        for p in target.iterdir():
+            shutil.move(str(p), str(bak_dir / p.name))
+        for p in tmp_dir.iterdir():
+            shutil.move(str(p), str(target / p.name))
+        tmp_dir.rmdir()
+        return
+    tmp_dir.rename(target)
+
+
 def from_scratch(db, dry_run: bool, include_user_docs: bool) -> None:
     from llama_index.core import StorageContext, VectorStoreIndex
 
@@ -177,11 +209,7 @@ def from_scratch(db, dry_run: bool, include_user_docs: bool) -> None:
         show_progress=True,
     )
     index.storage_context.persist(persist_dir=str(tmp_dir))
-    if target.exists():
-        if bak_dir.exists():
-            shutil.rmtree(bak_dir)
-        target.rename(bak_dir)
-    tmp_dir.rename(target)
+    _swap_index_dir(target, tmp_dir, bak_dir)
     print(f"Đã ghi index mới vào {target}" + (f" (bản cũ: {bak_dir})" if bak_dir.exists() else ""))
 
     # Đồng bộ trạng thái trong DB với index mới.

@@ -3,6 +3,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from pathlib import Path
 import os
+import sys
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    except Exception:
+        pass
 
 from contextlib import asynccontextmanager
 from core.generator import initialize_default_pipeline
@@ -38,6 +46,15 @@ async def lifespan(app: FastAPI):
     else:
         print("⚠️ Pipeline mặc định chưa sẵn sàng. API key chưa được set (GEMINI_API_KEY hoặc GOOGLE_API_KEY). "
               "Người dùng vẫn có thể dán API key trên UI để dùng.")
+    # Nạp sẵn embedding + BM25 + reranker (độc lập với API key) để câu hỏi đầu không phải chờ.
+    from core import config
+    if config.ENABLE_WARMUP:
+        print("Làm nóng model truy xuất (lần đầu có thể phải tải model reranker)...")
+        try:
+            from core.hybrid_retriever import warmup
+            warmup()
+        except Exception as exc:
+            print(f"[Warmup] ⚠️ Không làm nóng được ({exc}). Model sẽ nạp ở request đầu tiên.")
     yield
     # Dọn dẹp tài nguyên.
     print("Dọn dẹp và tắt RAG Pipeline...")
