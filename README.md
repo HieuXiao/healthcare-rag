@@ -94,8 +94,34 @@ DEFAULT_MODEL=gemini-3.5-flash
 
 ## Chạy project
 
-### 1) Khởi động Neo4j (Khuyến nghị cho Production & Dev chuẩn)
+### Cách 1: Chạy toàn bộ hệ thống bằng Docker (Khuyến nghị đóng gói)
 
+Chỉ cần cài Docker Desktop. Từ thư mục gốc dự án:
+
+```powershell
+# 1. Tạo file cấu hình rồi điền GEMINI_API_KEY
+copy backend\.env.example backend\.env
+
+# 2. Build và chạy Neo4j + Backend + Frontend
+docker compose up -d --build
+
+# 3. Lần đầu: nạp đồ thị y khoa và build Vector DB (index không được commit)
+docker compose exec backend python scripts/build_graph.py
+docker compose exec backend python scripts/rebuild_index.py --from-scratch
+docker compose restart backend
+```
+
+- **Frontend**: `http://localhost:5173` (gọi API qua nginx tại `/api`, nên truy cập được từ máy khác qua `http://<ip-máy>:5173`)
+- **Backend API**: `http://localhost:8001` (Tài liệu API: `http://localhost:8001/docs`)
+- **Neo4j Browser**: `http://localhost:7474` (user: `neo4j` / pass: `medicalrag`)
+
+Model HuggingFace (embedding + reranker) được cache trong volume `hf_cache`, chỉ tải lần đầu. Dữ liệu (`backend/data`, `backend/vector_db`) được mount từ máy thật nên giữ lại khi tạo lại container.
+
+---
+
+### Cách 2: Chạy Local Development từng phần
+
+#### 1) Khởi động Neo4j
 ```powershell
 docker compose up -d neo4j      # từ thư mục gốc dự án
 cd backend
@@ -152,7 +178,7 @@ npm install
 npm run dev
 ```
 
-UI theo URL Vite in ra (thường `http://127.0.0.1:5173`).
+UI theo URL Vite in ra (thường `http://127.0.0.1:5173`). Vite proxy `/api` sang backend `http://127.0.0.1:8001`; đổi đích proxy bằng biến `VITE_PROXY_TARGET`, hoặc set `VITE_API_BASE_URL` nếu muốn frontend gọi thẳng một backend ở domain khác.
 
 ## Giao diện & Tính năng Ứng dụng
 

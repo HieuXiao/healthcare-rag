@@ -200,7 +200,8 @@ def chat_stream(req: ChatRequest, user: User = Depends(auth.get_current_user), d
                         conversation_id=conv_id, role="bot",
                         content=final.get("answer", ""),
                         sources_json=json.dumps(final.get("sources", []), ensure_ascii=False),
-                        pipeline_json=json.dumps({"factcheck": final.get("factcheck", {})}, ensure_ascii=False),
+                        pipeline_json=json.dumps({"factcheck": final.get("factcheck", {}),
+                                                  "timings": final.get("timings", {})}, ensure_ascii=False),
                     ))
                     _db.add(ActivityLog(
                         user_id=user_id, action="chat", detail=question[:200], model=model,

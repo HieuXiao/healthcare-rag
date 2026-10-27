@@ -209,7 +209,8 @@ __marimo__/
 # App data (RAG web app)
 backend/data/app.db
 backend/data/app.db-journal
-backend/data/uploads/
+backend/data/uploads/*
+!backend/data/uploads/.gitkeep
 backend/data/model_usage.json
 
 # Vector DB: build tại máy bằng backend/scripts/rebuild_index.py, không commit

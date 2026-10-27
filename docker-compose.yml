@@ -1,7 +1,19 @@
-# Neo4j Community Edition (miễn phí) cho Knowledge Graph y khoa.
-# Chạy:  docker compose up -d neo4j
-# Browser quản trị: http://localhost:7474  (user: neo4j / pass: medicalrag)
-# Bolt cho app:     bolt://localhost:7687
+# =============================================================================
+# Docker Compose cho Clinical / Healthcare RAG
+#
+# Cách sử dụng:
+# 1. Chạy chỉ Neo4j (cho dev backend/frontend trên máy thật):
+#    docker compose up -d neo4j
+#
+# 2. Chạy toàn bộ hệ thống (Neo4j + Backend + Frontend):
+#    docker compose up -d --build
+#
+# Quản trị & URLs:
+# - Frontend:      http://localhost:5173
+# - Backend API:   http://localhost:8001 (Docs: http://localhost:8001/docs)
+# - Neo4j Browser: http://localhost:7474 (user: neo4j / pass: medicalrag)
+# =============================================================================
+
 services:
   neo4j:
     image: neo4j:5.26-community
@@ -22,7 +34,61 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    networks:
+      - medrag-net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: medrag-backend
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    # required: false để clone mới (chưa có .env) vẫn chạy được `docker compose up -d neo4j`
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      - BACKEND_HOST=0.0.0.0
+      - BACKEND_PORT=8001
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=medicalrag
+      - NEO4J_DATABASE=neo4j
+      - GRAPH_BACKEND=neo4j
+      # Fail-fast: depends_on đã chờ Neo4j healthy, không fallback ngầm để tránh che lỗi hạ tầng
+      - GRAPH_INMEMORY_FALLBACK=false
+      - UVICORN_RELOAD=false
+    volumes:
+      - ./backend/data:/app/data
+      - ./backend/vector_db:/app/vector_db
+      # Cache model HuggingFace (embedding + reranker) để không tải lại khi tạo lại container
+      - hf_cache:/root/.cache/huggingface
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    networks:
+      - medrag-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: medrag-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    networks:
+      - medrag-net
 
 volumes:
   neo4j_data:
   neo4j_logs:
+  hf_cache:
+
+networks:
+  medrag-net:
+    driver: bridge

@@ -17,8 +17,11 @@ Cung cấp cả API non-stream (run) và stream (SSE) cho routes.
 from __future__ import annotations
 
 import os
+import re
 import time
+import unicodedata
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional
 
@@ -31,7 +34,7 @@ warnings.filterwarnings(
 from llama_index.llms.google_genai import GoogleGenAI
 
 from core import config
-from core import deidentify, factcheck, intent_router
+from core import deidentify, factcheck, intent_router, reranker
 from core.graph_store import get_graph_store
 from core.hybrid_retriever import get_retriever
 from core import index_store
@@ -53,6 +56,32 @@ _TRANSIENT_MARKERS = ("503", "unavailable", "high demand", "overload", "429", "r
 def _is_transient(err: Exception) -> bool:
     s = str(err).lower()
     return any(m in s for m in _TRANSIENT_MARKERS)
+
+
+def _is_thinking_unsupported(err: Exception) -> bool:
+    # Model không hỗ trợ thinking_level (vd: họ 2.x, hoặc "minimal" trên một số bản Flash).
+    s = str(err).lower()
+    return "thinking" in s and any(m in s for m in ("400", "invalid", "not supported", "unsupported"))
+
+
+def _ms(t0: float) -> float:
+    return round((time.perf_counter() - t0) * 1000, 1)
+
+
+_ZERO_WIDTH = re.compile(r"[​-‍⁠﻿]")
+
+
+def normalize_query(text: str) -> str:
+    """
+    Đưa câu hỏi về Unicode NFC. Một số bộ gõ/trình duyệt gửi tiếng Việt dạng NFD
+    ("a" + dấu rời), khiến mọi regex/từ khoá viết dạng dựng sẵn (router chitchat,
+    BM25, entity KG, khử định danh) không khớp -> "Xin chào" bị coi là câu hỏi y khoa.
+    """
+    return _ZERO_WIDTH.sub("", unicodedata.normalize("NFC", text or "")).strip()
+
+
+# Pool dùng chung để chạy Graph song song với Hybrid retrieve.
+_prep_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="rag-prep")
 
 
 # ---------------------------------------------------------------------------
@@ -136,28 +165,37 @@ class RAGPipeline:
             api_key=self.api_key,
             temperature=config.LLM_TEMPERATURE,
         )
+        # Tắt hẳn thinking_level nếu model từ chối tham số này (tránh lỗi lặp lại).
+        self._thinking_supported = True
 
     # -- stage helpers ---------------------------------------------------
     def _prepare(self, query: str, allowed_keys=None, base_allowed: bool = True,
                  profile_text: str = "") -> Dict:
         """Chạy các tầng trước LLM, trả về mọi dữ liệu cần để sinh câu trả lời."""
         t0 = time.perf_counter()
+        timings: Dict[str, float] = {}
+        query = normalize_query(query)
 
         # 1. De-identify
+        t = time.perf_counter()
         if config.ENABLE_DEID:
             deid = deidentify.default_deidentifier.deidentify(query)
             clean_query, phi_map, phi_counts = deid.text, deid.mapping, deid.counts
         else:
             clean_query, phi_map, phi_counts = query, {}, {}
+        timings["deid_ms"] = _ms(t)
 
         # 2. Route
+        t = time.perf_counter()
         decision = intent_router.route(clean_query)
+        timings["route_ms"] = _ms(t)
 
         # 3. Phân luồng: Nếu là CHITCHAT (chào hỏi, hỏi danh tính) -> Bỏ qua truy xuất y văn và KG
         if decision.intent == intent_router.CHITCHAT:
             from core.graph_store import GraphContext
             from core.hybrid_retriever import RetrievalResult
             prompt = _build_chitchat_prompt(clean_query, profile_text)
+            timings["prep_ms"] = _ms(t0)
             return {
                 "clean_query": clean_query,
                 "phi_map": phi_map,
@@ -168,16 +206,26 @@ class RAGPipeline:
                 "context_block": "",
                 "prompt": prompt,
                 "prep_seconds": round(time.perf_counter() - t0, 3),
+                "timings": timings,
             }
 
-        # 4. Graph context (cho luồng lâm sàng)
-        graph_ctx = get_graph_store().query(clean_query)
+        # 4 + 5. Graph context và Hybrid retrieve độc lập nhau -> chạy song song.
+        def _graph_job():
+            tg = time.perf_counter()
+            ctx = get_graph_store().query(clean_query)
+            return ctx, _ms(tg)
 
-        # 5. Retrieve (có lọc theo quyền truy cập tài liệu của user)
+        graph_future = _prep_pool.submit(_graph_job)
+        t = time.perf_counter()
+        # Retrieve (có lọc theo quyền truy cập tài liệu của user)
         retrieval = get_retriever().retrieve(
             clean_query, allowed_keys=allowed_keys, base_allowed=base_allowed
         )
+        timings["retrieve_ms"] = _ms(t)
+        timings.update(retrieval.timings)
+        graph_ctx, timings["graph_ms"] = graph_future.result()
         context_block = _build_context_block(retrieval.nodes)
+        timings["prep_ms"] = _ms(t0)
 
         prompt = _build_prompt(clean_query, context_block, graph_ctx.text, profile_text)
 
@@ -191,27 +239,48 @@ class RAGPipeline:
             "context_block": context_block,
             "prompt": prompt,
             "prep_seconds": round(time.perf_counter() - t0, 3),
+            "timings": timings,
         }
 
     # -- LLM calls with retry on transient errors -----------------------
-    def _complete_with_retry(self, prompt: str, attempts: int = 3):
+    def _llm_kwargs(self, chitchat: bool) -> Dict:
+        """generation_config theo từng lần gọi: chỉ ghi đè thinking_level."""
+        level = config.THINKING_LEVEL_CHITCHAT if chitchat else config.THINKING_LEVEL
+        if not self._thinking_supported or level in ("", "off", "none", "default"):
+            return {}
+        return {"generation_config": {"thinking_config": {"thinking_level": level}}}
+
+    def _on_llm_error(self, exc: Exception, kwargs: Dict) -> bool:
+        """True nếu lỗi do model không nhận thinking_level -> tắt và gọi lại ngay."""
+        if kwargs and _is_thinking_unsupported(exc):
+            print(f"[LLM] ⚠️ {self.model_name} không hỗ trợ thinking_level, bỏ tham số này ({exc}).")
+            self._thinking_supported = False
+            return True
+        return False
+
+    def _complete_with_retry(self, prompt: str, chitchat: bool = False, attempts: int = 3):
         last = None
         for i in range(attempts):
+            kwargs = self._llm_kwargs(chitchat)
             try:
-                return self.llm.complete(prompt)
+                return self.llm.complete(prompt, **kwargs)
             except Exception as exc:
                 last = exc
+                if self._on_llm_error(exc, kwargs):
+                    continue
                 if not _is_transient(exc) or i == attempts - 1:
                     raise
+                print(f"[LLM] ⚠️ Lỗi tạm thời lần {i + 1}, thử lại sau {1.5 * (i + 1):.1f}s: {str(exc)[:160]}")
                 time.sleep(1.5 * (i + 1))
         raise last
 
-    def _stream_with_retry(self, prompt: str, attempts: int = 3):
+    def _stream_with_retry(self, prompt: str, chitchat: bool = False, attempts: int = 3):
         """Bắt đầu stream, retry nếu lỗi tạm thời xảy ra TRƯỚC token đầu tiên."""
         last = None
         for i in range(attempts):
+            kwargs = self._llm_kwargs(chitchat)
             try:
-                gen = self.llm.stream_complete(prompt)
+                gen = self.llm.stream_complete(prompt, **kwargs)
                 first = next(gen)  # ép gọi để lộ lỗi khởi tạo stream sớm
 
                 def _chain(_first=first, _gen=gen):
@@ -223,8 +292,11 @@ class RAGPipeline:
                 return iter(())
             except Exception as exc:
                 last = exc
+                if self._on_llm_error(exc, kwargs):
+                    continue
                 if not _is_transient(exc) or i == attempts - 1:
                     raise
+                print(f"[LLM] ⚠️ Lỗi tạm thời lần {i + 1}, thử lại sau {1.5 * (i + 1):.1f}s: {str(exc)[:160]}")
                 time.sleep(1.5 * (i + 1))
         raise last
 
@@ -270,22 +342,42 @@ class RAGPipeline:
                 "stats": retrieval.stats,
             },
             "model": self.model_name,
+            "thinking_level": (self._llm_kwargs(decision.intent == intent_router.CHITCHAT)
+                               .get("generation_config", {}).get("thinking_config", {})
+                               .get("thinking_level")),
             "prep_seconds": prep["prep_seconds"],
+            "timings": dict(prep["timings"]),
         }
+
+    def _log_timings(self, intent: str, timings: Dict):
+        if config.LOG_TIMINGS:
+            parts = " ".join(f"{k[:-3]}={v:.0f}ms" for k, v in timings.items())
+            rr = reranker.backend_label() if intent != intent_router.CHITCHAT else None
+            print(f"[Timing] {self.model_name} intent={intent}"
+                  f"{f' reranker={rr}' if rr else ''} {parts}")
 
     # -- public: non-stream ---------------------------------------------
     def run(self, query: str, allowed_keys=None, base_allowed: bool = True,
             profile_text: str = "") -> Dict:
+        t_start = time.perf_counter()
         prep = self._prepare(query, allowed_keys, base_allowed, profile_text)
-        resp = self._complete_with_retry(prep["prompt"])
-        answer = str(resp).strip()
-
+        timings = prep["timings"]
         is_chitchat = prep["route"].intent == intent_router.CHITCHAT
+
+        t = time.perf_counter()
+        resp = self._complete_with_retry(prep["prompt"], chitchat=is_chitchat)
+        answer = str(resp).strip()
+        timings["llm_ms"] = _ms(t)
+
+        t = time.perf_counter()
         if is_chitchat:
             fc = factcheck.FactCheckResult(grounded_ratio=None, passed=True, note="Hội thoại chào hỏi / xã giao", unsupported=[])
         else:
             ctx_texts = [n.get("text", "") for n in prep["retrieval"].nodes]
             fc = factcheck.check(answer, ctx_texts)
+        timings["factcheck_ms"] = _ms(t)
+        timings["total_ms"] = _ms(t_start)
+        self._log_timings(prep["route"].intent, timings)
 
         # Re-identify
         if config.ENABLE_DEID and prep["phi_map"]:
@@ -317,6 +409,7 @@ class RAGPipeline:
           {type: 'done', data: {...}}       -> sources + factcheck + answer đầy đủ
           {type: 'error', data: '...'}
         """
+        t_start = time.perf_counter()
         try:
             prep = self._prepare(query, allowed_keys, base_allowed, profile_text)
         except Exception as exc:
@@ -325,16 +418,22 @@ class RAGPipeline:
 
         yield {"type": "pipeline", "data": self._pipeline_meta(prep)}
 
+        timings = prep["timings"]
         is_chitchat = prep["route"].intent == intent_router.CHITCHAT
         collected: List[str] = []
+        t_llm = time.perf_counter()
         try:
-            for chunk in self._stream_with_retry(prep["prompt"]):
+            for chunk in self._stream_with_retry(prep["prompt"], chitchat=is_chitchat):
                 delta = getattr(chunk, "delta", None)
                 if delta is None:
                     # một số phiên bản trả text tích luỹ
                     delta = getattr(chunk, "text", "")
                 if not delta:
                     continue
+                if not collected:
+                    # TTFT tính từ lúc gọi LLM; ttft_total tính từ lúc nhận câu hỏi.
+                    timings["llm_ttft_ms"] = _ms(t_llm)
+                    timings["ttft_total_ms"] = _ms(t_start)
                 collected.append(delta)
                 # Re-identify theo từng mảnh để không rò token PHI ra UI.
                 out_delta = delta
@@ -344,13 +443,18 @@ class RAGPipeline:
         except Exception as exc:
             yield {"type": "error", "data": f"Lỗi khi sinh câu trả lời: {exc}"}
             return
+        timings["llm_ms"] = _ms(t_llm)
 
         full_answer = "".join(collected).strip()
+        t = time.perf_counter()
         if is_chitchat:
             fc = factcheck.FactCheckResult(grounded_ratio=None, passed=True, note="Hội thoại chào hỏi / xã giao", unsupported=[])
         else:
             ctx_texts = [n.get("text", "") for n in prep["retrieval"].nodes]
             fc = factcheck.check(full_answer, ctx_texts)
+        timings["factcheck_ms"] = _ms(t)
+        timings["total_ms"] = _ms(t_start)
+        self._log_timings(prep["route"].intent, timings)
 
         if config.ENABLE_DEID and prep["phi_map"]:
             full_answer = deidentify.default_deidentifier.reidentify(full_answer, prep["phi_map"])
@@ -369,6 +473,7 @@ class RAGPipeline:
                     "note": fc.note,
                     "unsupported": fc.unsupported,
                 },
+                "timings": timings,
             },
         }
 

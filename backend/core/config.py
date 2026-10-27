@@ -70,7 +70,22 @@ FINAL_TOP_K = _env_int("FINAL_TOP_K", 5)   # số tài liệu cuối đưa vào 
 # Reranker (cross-encoder)
 # ---------------------------------------------------------------------------
 ENABLE_RERANKER = _env_bool("ENABLE_RERANKER", True)
+# "onnx"  : bge-reranker-v2-m3 lượng tử hoá int8 chạy bằng onnxruntime (nhanh trên CPU)
+# "torch" : bản gốc fp32 qua sentence-transformers (chậm trên CPU, dùng để so sánh)
+RERANKER_BACKEND = os.getenv("RERANKER_BACKEND", "onnx").strip().lower()
 RERANKER_MODEL_NAME = os.getenv("RERANKER_MODEL_NAME", "BAAI/bge-reranker-v2-m3")
+# Bản int8 của chính bge-reranker-v2-m3 (Apache-2.0). Ghim revision để không tự
+# tải về phiên bản khác khi repo thay đổi.
+RERANKER_ONNX_REPO = os.getenv("RERANKER_ONNX_REPO", "onebrain-ai/onebrain-rerank-v1")
+RERANKER_ONNX_FILE = os.getenv("RERANKER_ONNX_FILE", "model_int8.onnx")
+RERANKER_ONNX_REVISION = os.getenv(
+    "RERANKER_ONNX_REVISION", "c39c772d8c2b1fe9c9b838bb430c5294516505a7"
+)
+# Số token tối đa mỗi cặp (câu hỏi, đoạn văn). Chi phí tăng ~tuyến tính tới bậc hai
+# theo độ dài: 512 -> 256 nhanh hơn ~2-3 lần, đổi lại chỉ chấm phần đầu đoạn văn.
+RERANKER_MAX_LENGTH = _env_int("RERANKER_MAX_LENGTH", 256)
+# Số luồng CPU cho onnxruntime (0 = để onnxruntime tự chọn theo số nhân).
+RERANKER_THREADS = _env_int("RERANKER_THREADS", 0)
 
 # ---------------------------------------------------------------------------
 # Knowledge Graph (Neo4j / Mock)
@@ -101,6 +116,20 @@ FACTCHECK_MIN_OVERLAP = _env_float("FACTCHECK_MIN_OVERLAP", 0.25)
 # Generation
 # ---------------------------------------------------------------------------
 LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", 0.1)
+
+# Mức "suy nghĩ" của Gemini 3.x: minimal | low | medium | high. Không đặt thì
+# Gemini 3 mặc định "high" -> token đầu tiên đến chậm hơn đáng kể.
+# Để trống / "off" để không gửi tham số (dùng mặc định của model).
+THINKING_LEVEL = os.getenv("THINKING_LEVEL", "low").strip().lower()
+THINKING_LEVEL_CHITCHAT = os.getenv("THINKING_LEVEL_CHITCHAT", "minimal").strip().lower()
+
+# ---------------------------------------------------------------------------
+# Hiệu năng
+# ---------------------------------------------------------------------------
+# Nạp sẵn embedding + reranker + BM25 lúc khởi động để request đầu không phải chờ.
+ENABLE_WARMUP = _env_bool("ENABLE_WARMUP", True)
+# In một dòng thời gian từng tầng ra log cho mỗi câu hỏi.
+LOG_TIMINGS = _env_bool("LOG_TIMINGS", True)
 
 # Vị trí Vector DB (hỗ trợ cả cấu trúc cũ & mới).
 _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

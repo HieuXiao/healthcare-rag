@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import re
 import threading
+import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Dict, List
 
@@ -22,8 +24,9 @@ from core import index_store
 
 def _tokenize(text: str) -> List[str]:
     # Tokenise thô cho tiếng Việt: hạ chữ thường + tách theo khoảng trắng/ký tự.
+    # NFC trước: text PDF/bộ gõ dạng NFD sẽ bị regex chữ dựng sẵn cắt vụn từng âm tiết.
     return re.findall(r"[0-9a-zàáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ]+",
-                      (text or "").lower())
+                      unicodedata.normalize("NFC", text or "").lower())
 
 
 @dataclass
@@ -32,6 +35,11 @@ class RetrievalResult:
     method: str = "hybrid"
     reranked: bool = False
     stats: Dict = field(default_factory=dict)
+    timings: Dict = field(default_factory=dict)       # {vector_ms, bm25_ms, rerank_ms}
+
+
+def _ms(t0: float) -> float:
+    return round((time.perf_counter() - t0) * 1000, 1)
 
 
 class HybridRetriever:
@@ -107,8 +115,13 @@ class HybridRetriever:
 
         # Khi có lọc theo scope, lấy pool ứng viên rộng hơn để không bị thiếu.
         pool = max(config.VECTOR_TOP_K, 24) if allowed_keys is not None else config.VECTOR_TOP_K
-        vec = self._vector_search(query, pool)
+        timings: Dict[str, float] = {}
+        t = time.perf_counter()
+        vec = self._vector_search(query, pool)   # gồm cả bước embed câu hỏi
+        timings["vector_ms"] = _ms(t)
+        t = time.perf_counter()
         bm25 = self._bm25_search(query, pool)
+        timings["bm25_ms"] = _ms(t)
 
         # Lọc theo quyền truy cập tài liệu.
         vec = [(n, s) for (n, s) in vec if self._is_allowed(n, allowed_keys, base_allowed)]
@@ -134,7 +147,9 @@ class HybridRetriever:
                 "fusion_score": round(fused_scores[nid], 5),
             })
 
+        t = time.perf_counter()
         reranked_docs, did_rerank = reranker.rerank(query, candidates, top_k=final_top_k)
+        timings["rerank_ms"] = _ms(t)
 
         return RetrievalResult(
             nodes=reranked_docs,
@@ -145,7 +160,9 @@ class HybridRetriever:
                 "bm25_hits": len(bm25),
                 "fused": len(fused_ids),
                 "returned": len(reranked_docs),
+                "reranker": reranker.backend_label() if did_rerank else None,
             },
+            timings=timings,
         )
 
 
@@ -161,3 +178,18 @@ def get_retriever() -> HybridRetriever:
             if _retriever is None:
                 _retriever = HybridRetriever()
     return _retriever
+
+
+def warmup():
+    """
+    Nạp sẵn embedding, BM25 và reranker rồi chạy thử 1 lượt, để request đầu
+    tiên của người dùng không phải chờ tải model reranker.
+    """
+    t0 = time.perf_counter()
+    retriever = get_retriever()
+    # Lượt chạy thử đầu tiên của model PyTorch cũng chậm hơn hẳn các lượt sau.
+    index_store.get_embed_model().get_query_embedding("khởi động hệ thống")
+    retriever._ensure_bm25()
+    if reranker.is_available():
+        reranker.rerank("khởi động", [{"text": "khởi động hệ thống"}])
+    print(f"[Warmup] ✅ Embedding + BM25 + Reranker sẵn sàng ({time.perf_counter() - t0:.1f}s).")

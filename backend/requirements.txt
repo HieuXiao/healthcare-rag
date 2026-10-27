@@ -20,7 +20,8 @@ google-generativeai
 google-api-core
 
 # ===== Embeddings / Reranker =====
-sentence-transformers          # CrossEncoder cho bge-reranker-v2-m3
+sentence-transformers          # CrossEncoder cho bge-reranker-v2-m3 (RERANKER_BACKEND=torch)
+onnxruntime                    # bge-reranker-v2-m3 int8 (RERANKER_BACKEND=onnx, mặc định)
 transformers
 rank-bm25                      # BM25 cho Hybrid Search
 
