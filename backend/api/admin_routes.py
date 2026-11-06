@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
+from api import usage
 from core import auth, deidentify, graph_seed, services
 from core.db import BASE_INDEX_MARKER, UPLOAD_DIR, get_db, to_stored_path
 from core.models import ActivityLog, Conversation, Document, User
@@ -250,9 +251,15 @@ def activity(admin: User = Depends(auth.require_admin), db: Session = Depends(ge
     avg_ground = db.query(func.avg(ActivityLog.grounded_ratio)).filter(
         ActivityLog.action == "chat", ActivityLog.grounded_ratio.isnot(None)).scalar()
 
-    # Usage theo model (từ log chat).
-    per_model = db.query(ActivityLog.model, func.count(ActivityLog.id)).filter(
-        ActivityLog.action == "chat").group_by(ActivityLog.model).all()
+    # Usage theo model (từ log chat) kèm điểm bám nguồn TB từng model.
+    per_model = db.query(
+        ActivityLog.model,
+        func.count(ActivityLog.id),
+        func.avg(ActivityLog.grounded_ratio),
+    ).filter(ActivityLog.action == "chat").group_by(ActivityLog.model).all()
+
+    total_chunks = db.query(func.coalesce(func.sum(Document.num_chunks), 0)).scalar() or 0
+    quota_snap = usage.snapshot()
 
     # Phân bổ bám nguồn lâm sàng (Fact-Check Distribution)
     all_chat_grounding = db.query(ActivityLog.grounded_ratio).filter(
@@ -266,33 +273,57 @@ def activity(admin: User = Depends(auth.require_admin), db: Session = Depends(ge
         else:
             grounding_dist["low"] += 1
 
-    # Xu hướng theo ngày (Timeline)
+    # Xu hướng theo ngày (Timeline) — 14 ngày GẦN NHẤT, kèm số câu theo từng mức chất lượng
+    is_chat = ActivityLog.action == "chat"
+    gr = ActivityLog.grounded_ratio
     daily_stats = db.query(
         func.substr(ActivityLog.created_at, 1, 10).label("day"),
         func.count(ActivityLog.id).label("total"),
-        func.sum(case((ActivityLog.action == "chat", 1), else_=0)).label("chats"),
-        func.avg(ActivityLog.grounded_ratio).label("avg_ground")
-    ).group_by("day").order_by("day").limit(14).all()
+        func.sum(case((is_chat, 1), else_=0)).label("chats"),
+        func.avg(gr).label("avg_ground"),
+        func.sum(case((is_chat & (gr >= 0.7), 1), else_=0)).label("high"),
+        func.sum(case((is_chat & (gr >= 0.4) & (gr < 0.7), 1), else_=0)).label("medium"),
+        func.sum(case((is_chat & (gr < 0.4), 1), else_=0)).label("low"),
+    ).group_by("day").order_by(func.substr(ActivityLog.created_at, 1, 10).desc()).limit(14).all()
 
     timeline = []
-    for d, total, chats, ag in daily_stats:
+    for d, total, chats, ag, hi, med, lo in reversed(daily_stats):
+        chats = chats or 0
+        hi, med, lo = hi or 0, med or 0, lo or 0
         timeline.append({
             "date": d,
             "total_actions": total,
-            "chats": chats or 0,
-            "avg_grounded": round(float(ag) * 100, 1) if ag is not None else 0,
+            "chats": chats,
+            "avg_grounded": round(float(ag) * 100, 1) if ag is not None else None,
+            "high": hi,
+            "medium": med,
+            "low": lo,
+            "unrated": max(0, chats - hi - med - lo),
         })
 
-    # Phân loại thực thể Knowledge Graph
-    entity_types = {}
-    for meta in graph_seed.ENTITIES.values():
+    # Phân loại thực thể Knowledge Graph kèm chi tiết ICD-10 & Triples
+    entity_groups: dict[str, list[dict]] = {}
+    for name, meta in graph_seed.ENTITIES.items():
         t = meta.get("type", "Khác")
-        entity_types[t] = entity_types.get(t, 0) + 1
+        related_triples = [
+            {"subject": s, "relation": rel, "object": o}
+            for (s, rel, o) in graph_seed.TRIPLES
+            if s == name or o == name
+        ]
+        entity_groups.setdefault(t, []).append({
+            "name": name,
+            "icd10": meta.get("icd10", ""),
+            "synonyms": meta.get("synonyms", []),
+            "triples": related_triples,
+        })
 
     graph_stats = {
         "total_entities": len(graph_seed.ENTITIES),
         "total_triples": len(graph_seed.TRIPLES),
-        "entity_types": [{"type": k, "count": v} for k, v in entity_types.items()],
+        "entity_types": [
+            {"type": k, "count": len(v), "entities": v}
+            for k, v in entity_groups.items()
+        ],
     }
 
     # 1. Nhật ký Truy vấn (Query Logs):
@@ -352,6 +383,33 @@ def activity(admin: User = Depends(auth.require_admin), db: Session = Depends(ge
             "created_at": r.created_at.isoformat() if r.created_at else "",
         })
 
+    total_phi_redacted = sum(item.get("phi_redacted", 0) for item in chat_logs)
+
+    # 4. Danh sách tài liệu hệ thống & tóm tắt hoạt động người dùng cho Trung tâm Vận hành
+    sys_docs_rows = db.query(Document).filter(Document.scope == "system").order_by(Document.created_at.asc()).all()
+    system_docs_list = [_doc_out(d) for d in sys_docs_rows]
+
+    users_rows = db.query(User).order_by(User.created_at.asc()).all()
+    users_summary = []
+    for u in users_rows:
+        n_conv = db.query(func.count(Conversation.id)).filter(Conversation.user_id == u.id).scalar() or 0
+        n_chat = db.query(func.count(ActivityLog.id)).filter(
+            ActivityLog.user_id == u.id, ActivityLog.action == "chat"
+        ).scalar() or 0
+        last_act = db.query(func.max(ActivityLog.created_at)).filter(ActivityLog.user_id == u.id).scalar()
+        users_summary.append({
+            "id": u.id,
+            "anon_id": _anonymize_user_id(u.id),
+            "username": u.username,
+            "role": u.role,
+            "admin_subrole": u.title if u.role == "admin" and u.title in ("System Admin", "Data Steward", "Auditor") else ("System Admin" if u.role == "admin" else "Bác sĩ"),
+            "specialty": u.specialty or "Đa khoa",
+            "conversations": n_conv,
+            "chats": n_chat,
+            "last_active": last_act.isoformat() if hasattr(last_act, "isoformat") else (str(last_act) if last_act else ""),
+        })
+    users_summary.sort(key=lambda x: (x["chats"], x["conversations"]), reverse=True)
+
     return {
         "stats": {
             "total_users": total_users,
@@ -359,13 +417,25 @@ def activity(admin: User = Depends(auth.require_admin), db: Session = Depends(ge
             "total_documents": total_docs,
             "system_documents": system_docs,
             "user_documents": user_docs,
+            "total_chunks": int(total_chunks),
             "chats_today": chats_today,
+            "total_phi_redacted": total_phi_redacted,
             "avg_grounded_ratio": round(float(avg_ground), 3) if avg_ground is not None else None,
         },
-        "per_model": [{"model": m or "—", "count": c} for m, c in per_model],
+        "per_model": [
+            {
+                "model": m or "—",
+                "count": c,
+                "avg_grounded": round(float(ag) * 100, 1) if ag is not None else 0,
+            }
+            for m, c, ag in per_model
+        ],
+        "model_quotas": quota_snap.get("models", []),
         "grounding_dist": grounding_dist,
         "timeline": timeline,
         "graph_stats": graph_stats,
+        "system_docs": system_docs_list,
+        "users_summary": users_summary,
         "chat_logs": chat_logs,
         "feedback_logs": feedback_logs,
         "auth_logs": auth_logs,

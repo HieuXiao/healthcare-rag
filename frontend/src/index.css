@@ -2,37 +2,37 @@
    Medical RAG — Base & Theme tokens
    Phong cách lâm sàng chuyên nghiệp, sáng/tối tự động.
    ============================================================ */
-@import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap&subset=vietnamese');
+@import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap&subset=vietnamese');
 
 :root {
-  --bg: #eef1f5;
+  --bg: #eef2f6;
   --panel: #ffffff;
-  --panel-2: #f7f9fc;
-  --ink: #17202b;
-  --muted: #5b6672;
-  --line: #d6dde6;
-  --line-soft: #e8edf3;
+  --panel-2: #f4f7fb;
+  --ink: #0f172a;
+  --muted: #475569;
+  --line: #cfd8e3;
+  --line-soft: #e2e8f0;
 
   --brand: #0b7a67;        /* xanh y tế */
-  --brand-ink: #075a4c;
-  --brand-tint: #e7f5f1;
-  --accent: #2d55b8;       /* xanh dương dữ liệu */
-  --accent-tint: #ecf1fc;
+  --brand-ink: #064e41;
+  --brand-tint: #e6f5f1;
+  --accent: #2554b8;       /* xanh dương dữ liệu */
+  --accent-tint: #ebf1fc;
   --danger: #b3261e;
   --danger-tint: #fbedec;
-  --warn: #9a6700;
+  --warn: #925f00;
   --warn-tint: #fdf4e3;
   --ok: #0b7a67;
 
-  --user-bubble: #2d55b8;
+  --user-bubble: #2554b8;
   --user-ink: #ffffff;
 
-  --shadow: 0 6px 24px rgba(18, 32, 51, 0.08);
-  --shadow-sm: 0 2px 8px rgba(18, 32, 51, 0.06);
+  --shadow: 0 6px 24px rgba(15, 23, 42, 0.08);
+  --shadow-sm: 0 1px 4px rgba(15, 23, 42, 0.06);
   --radius: 14px;
 
-  --f-body: "Be Vietnam Pro", "Segoe UI", system-ui, sans-serif;
-  --f-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  --f-body: "Inter", "Be Vietnam Pro", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --f-mono: "IBM Plex Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -102,8 +102,9 @@ html, body {
   color: var(--ink);
   font-family: var(--f-body);
   font-size: 15px;
-  line-height: 1.55;
-  -webkit-font-smoothing: antialiased;
+  line-height: 1.5;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
 }
 
 #root { width: 100%; min-height: 100vh; }

@@ -1,13 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { api } from './api.js';
 import { useAuth } from './auth.jsx';
 
 export default function AdminPanel({ tab = 'dashboard', onSelectTab }) {
   const currentTab = tab || 'dashboard';
+  const isDashboard = currentTab === 'dashboard';
 
   return (
-    <div className="page-pad admin-container">
-      {/* Top tabs đồng bộ với AdminSidebar (hiển thị trên màn hình nhỏ) */}
+    <div className={`page-pad admin-container ${isDashboard ? 'admin-viewport-mode' : ''}`}>
+      {/* Top tabs đồng bộ với AdminSidebar (chỉ hiển thị trên màn hình nhỏ) */}
       <div className="admin-tabs">
         <button
           className={currentTab === 'dashboard' ? 'active' : ''}
@@ -51,191 +53,846 @@ export default function AdminPanel({ tab = 'dashboard', onSelectTab }) {
 }
 
 /* ==========================================================================
-   1. DASHBOARD CHÍNH: KPI + 4 BIỂU ĐỒ Y KHOA + HOẠT ĐỘNG TÁCH BẠCH
+   1. DASHBOARD QUẢN TRỊ — đọc theo thứ tự trái → phải, trên → dưới:
+      (1) Hệ thống có ổn không?  → dải chỉ số tổng quan
+      (2) Chuyện gì đang xảy ra? → lưu lượng theo ngày + chất lượng câu trả lời
+      (3) Cần làm gì?            → danh sách việc cần xử lý
+      (4) Xem chi tiết ở đâu?    → nhật ký hoạt động (được lọc bởi mọi thành phần phía trên)
    ========================================================================== */
+
+const QUALITY_META = {
+  high: { label: 'Đạt chuẩn', range: '≥70%' },
+  medium: { label: 'Cần đối chiếu', range: '40–69%' },
+  low: { label: 'Thiếu nguồn', range: '<40%' },
+  review: { label: 'Cần xem lại', range: '<70%' },
+};
+
+const EMPTY = [];
+
+function matchQuality(ratio, tier) {
+  const r = ratio ?? 0;
+  if (tier === 'high') return r >= 0.7;
+  if (tier === 'medium') return r >= 0.4 && r < 0.7;
+  if (tier === 'low') return r < 0.4;
+  if (tier === 'review') return r < 0.7;
+  return true;
+}
+
 function Dashboard({ onNavigateTab }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
-  const [activityTab, setActivityTab] = useState('chats'); // 'chats' | 'auth'
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Bộ lọc chéo: mọi thành phần phía trên đều lọc bảng Nhật ký phía dưới
+  const [qualityFilter, setQualityFilter] = useState(null); // null | 'high' | 'medium' | 'low' | 'review'
+  const [selectedDate, setSelectedDate] = useState(null); // null | 'YYYY-MM-DD'
+  const [selectedUserAnon, setSelectedUserAnon] = useState(null); // null | 'User_XXXXX'
+  const [activityTab, setActivityTab] = useState('chats'); // 'chats' | 'feedback' | 'auth'
+  const [selectedLog, setSelectedLog] = useState(null);
+  const [quickSearch, setQuickSearch] = useState('');
+  const [busyDocId, setBusyDocId] = useState(null);
+
+  const fetchDashboard = () => {
+    setRefreshing(true);
+    api.adminActivity()
+      .then((res) => {
+        setData(res);
+        setError('');
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setRefreshing(false));
+  };
 
   useEffect(() => {
-    api.adminActivity().then(setData).catch((e) => setError(e.message));
+    fetchDashboard();
   }, []);
 
-  if (error) return <div className="auth-error">⚠️ Lỗi tải dữ liệu: {error}</div>;
-  if (!data) return <div className="conv-empty">Đang tổng hợp dữ liệu lâm sàng và kiểm toán…</div>;
+  const chatLogs = data?.chat_logs || EMPTY;
+  const authLogs = data?.auth_logs || EMPTY;
+  const feedbackLogs = data?.feedback_logs || EMPTY;
+  const systemDocs = data?.system_docs || EMPTY;
+  const modelQuotas = data?.model_quotas || EMPTY;
+
+  const filteredChats = useMemo(() => {
+    const q = quickSearch.trim().toLowerCase();
+    return chatLogs.filter((item) => {
+      if (qualityFilter && !matchQuality(item.grounded_ratio, qualityFilter)) return false;
+      if (selectedDate && (item.created_at || '').slice(0, 10) !== selectedDate) return false;
+      if (selectedUserAnon && item.user !== selectedUserAnon) return false;
+      if (q) {
+        const hit =
+          (item.query || '').toLowerCase().includes(q) ||
+          (item.user || '').toLowerCase().includes(q);
+        if (!hit) return false;
+      }
+      return true;
+    });
+  }, [chatLogs, qualityFilter, selectedDate, selectedUserAnon, quickSearch]);
+
+  // Các vấn đề hệ thống tự phát hiện, sắp theo mức ưu tiên
+  const issues = useMemo(() => {
+    const list = [];
+    modelQuotas
+      .filter((q) => (q.usage_percent || 0) >= 80)
+      .forEach((q) =>
+        list.push({
+          key: `quota-${q.name}`,
+          level: (q.usage_percent || 0) >= 95 ? 'danger' : 'warn',
+          kind: 'quota',
+          title: `${q.name} đã dùng ${q.usage_percent}% hạn mức hôm nay`,
+          meta: `Còn ${Math.max(0, (q.limit || 0) - (q.used || 0))} lượt gọi trong ngày`,
+        })
+      );
+    systemDocs
+      .filter((d) => !d.active || !d.indexed)
+      .forEach((d) =>
+        list.push({
+          key: `doc-${d.id}`,
+          level: 'warn',
+          kind: 'doc',
+          doc: d,
+          title: `Tài liệu đang tắt: ${d.filename}`,
+          meta: 'AI không dùng tài liệu này để trả lời câu hỏi',
+        })
+      );
+    feedbackLogs.forEach((fb) =>
+      list.push({
+        key: `fb-${fb.id}`,
+        level: 'danger',
+        kind: 'feedback',
+        log: fb,
+        title: `Người dùng báo lỗi: ${fb.reason}`,
+        meta: `${fb.user} · ${fmt(fb.created_at)}`,
+      })
+    );
+    chatLogs
+      .filter((c) => c.grounded_ratio != null && c.grounded_ratio < 0.4)
+      .forEach((c) =>
+        list.push({
+          key: `low-${c.id}`,
+          level: 'danger',
+          kind: 'low',
+          log: c,
+          title: c.query,
+          meta: `Thiếu nguồn (${Math.round((c.grounded_ratio || 0) * 100)}%) · ${c.user} · ${fmt(c.created_at)}`,
+        })
+      );
+    return list;
+  }, [modelQuotas, systemDocs, feedbackLogs, chatLogs]);
+
+  if (error) return <div className="auth-error">Lỗi tải dữ liệu: {error}</div>;
+  if (!data) return <div className="conv-empty">Đang tải dữ liệu tổng quan…</div>;
 
   const s = data.stats || {};
-  const avgGrounded = s.avg_grounded_ratio != null ? `${Math.round(s.avg_grounded_ratio * 100)}%` : '—';
-  const graphStats = data.graph_stats || { total_entities: 15, total_triples: 17, entity_types: [] };
-  const groundingDist = data.grounding_dist || { high: 0, medium: 0, low: 0 };
-  const chatLogs = data.chat_logs || [];
-  const authLogs = data.auth_logs || [];
+  const dist = data.grounding_dist || { high: 0, medium: 0, low: 0 };
+  const usersSummary = data.users_summary || [];
+
+  const rated = (dist.high || 0) + (dist.medium || 0) + (dist.low || 0);
+  const pHigh = rated ? Math.round(((dist.high || 0) / rated) * 100) : null;
+  const needReview = (dist.medium || 0) + (dist.low || 0);
+  const mediumCount = chatLogs.filter((c) => c.grounded_ratio != null && c.grounded_ratio >= 0.4 && c.grounded_ratio < 0.7).length;
+
+  const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
+  const active7 = usersSummary.filter((u) => {
+    if (!u.last_active) return false;
+    const t = Date.parse(u.last_active + (u.last_active.endsWith('Z') ? '' : 'Z'));
+    return !Number.isNaN(t) && t >= weekAgo;
+  }).length;
+
+  const topQuota = modelQuotas.reduce((best, q) => (!best || (q.usage_percent || 0) > (best.usage_percent || 0) ? q : best), null);
+  const quotaPct = topQuota ? topQuota.usage_percent || 0 : null;
+
+  const issueSummary = (() => {
+    const parts = [];
+    const nLow = issues.filter((i) => i.kind === 'low').length;
+    const nFb = issues.filter((i) => i.kind === 'feedback').length;
+    const nDoc = issues.filter((i) => i.kind === 'doc').length;
+    const nQuota = issues.filter((i) => i.kind === 'quota').length;
+    if (nLow) parts.push(`${nLow} câu thiếu nguồn`);
+    if (nFb) parts.push(`${nFb} báo lỗi`);
+    if (nDoc) parts.push(`${nDoc} tài liệu tắt`);
+    if (nQuota) parts.push(`${nQuota} model sắp hết hạn mức`);
+    return parts.length ? parts.slice(0, 2).join(' · ') : 'Hệ thống hoạt động ổn định';
+  })();
+
+  const hasActiveFilter = Boolean(qualityFilter || selectedDate || selectedUserAnon || quickSearch.trim());
+
+  const clearAllFilters = () => {
+    setQualityFilter(null);
+    setSelectedDate(null);
+    setSelectedUserAnon(null);
+    setQuickSearch('');
+  };
+  const focusChats = () => setActivityTab('chats');
+  const toggleQuality = (tier) => {
+    focusChats();
+    setQualityFilter((prev) => (prev === tier ? null : tier));
+  };
+  const toggleDate = (d) => {
+    focusChats();
+    setSelectedDate((prev) => (prev === d ? null : d));
+  };
+  const toggleUser = (anon) => {
+    focusChats();
+    setSelectedUserAnon((prev) => (prev === anon ? null : anon));
+  };
+
+  const handleToggleDoc = async (docId) => {
+    setBusyDocId(docId);
+    try {
+      await api.adminToggleDocument(docId);
+      fetchDashboard();
+    } catch {
+      /* ignore */
+    } finally {
+      setBusyDocId(null);
+    }
+  };
+
+  const tone = (v, okAt, warnAt) => (v == null ? 'neutral' : v >= okAt ? 'ok' : v >= warnAt ? 'warn' : 'danger');
 
   return (
-    <>
-      {/* 1. Dải thẻ chỉ số KPI cốt lõi */}
-      <div className="stat-grid admin-kpi-grid">
-        <StatCard icon="👥" label="Người dùng" value={s.total_users || 0} hint="Tài khoản trong hệ thống" />
-        <StatCard icon="💬" label="Tổng lượt hỏi RAG" value={s.total_chats || 0} hint={`${s.chats_today || 0} câu hỏi hôm nay`} />
-        <StatCard icon="📄" label="Tài liệu tri thức" value={s.total_documents || 0} hint={`${s.system_documents || 1} gốc · ${s.user_documents || 0} Namespace riêng`} />
-        <StatCard
-          icon="🎯"
-          label="Bám nguồn TB"
-          value={avgGrounded}
-          hint={s.avg_grounded_ratio >= 0.7 ? '🟢 Đạt chuẩn lâm sàng' : s.avg_grounded_ratio >= 0.4 ? '🟡 Cần đối chiếu thêm' : '🔴 Cảnh báo ảo giác'}
-          highlight
+    <div className="dash-onepage">
+      {/* (1) TRẠNG THÁI TỔNG QUAN */}
+      <div className="dash-kpi-strip">
+        <StatTile
+          label="Cần xử lý"
+          info="Số vấn đề hệ thống tự phát hiện: câu trả lời thiếu nguồn (<40%), báo lỗi từ người dùng, tài liệu bị tắt và model sắp hết hạn mức. Chi tiết ở khung “Việc cần xử lý” bên dưới."
+          value={issues.length}
+          sub={issueSummary}
+          status={issues.length ? 'danger' : 'ok'}
         />
-        <StatCard
-          icon="🕸️"
-          label="Knowledge Graph"
-          value={`${graphStats.total_entities} thực thể`}
-          hint={`${graphStats.total_triples} quan hệ (Triples)`}
+        <StatTile
+          label="Truy vấn hôm nay"
+          info="Số câu hỏi người dùng gửi tới hệ thống trong ngày hôm nay. Nhấn để mở trang nhật ký truy vấn đầy đủ."
+          value={s.chats_today || 0}
+          sub={`Tổng cộng ${s.total_chats || 0} truy vấn`}
+          onClick={() => onNavigateTab && onNavigateTab('chats')}
+        />
+        <StatTile
+          label="Câu trả lời đạt chuẩn"
+          info="Tỉ lệ câu trả lời có từ 70% nội dung trở lên khớp với tài liệu nguồn. Câu dưới mức này nên được kiểm tra lại. Nhấn để lọc nhật ký chỉ còn các câu cần xem lại."
+          value={pHigh == null ? '—' : `${pHigh}%`}
+          sub={rated ? `${needReview} / ${rated} câu cần xem lại` : 'Chưa có câu nào được đánh giá'}
+          status={tone(pHigh, 70, 40)}
+          active={qualityFilter === 'review'}
+          onClick={() => toggleQuality('review')}
+        />
+        <StatTile
+          label="Người dùng hoạt động"
+          info="Số tài khoản có hoạt động trong 7 ngày qua trên tổng số tài khoản. Nhấn để mở trang quản lý người dùng."
+          value={`${active7} / ${s.total_users || 0}`}
+          sub="Trong 7 ngày qua"
+          onClick={() => onNavigateTab && onNavigateTab('users')}
+        />
+        <StatTile
+          label="Hạn mức API hôm nay"
+          info="Mức sử dụng hạn mức gọi API cao nhất trong các model AI hôm nay. Hạn mức được đặt lại mỗi ngày; nên theo dõi khi vượt 80%."
+          value={quotaPct == null ? '—' : `${quotaPct}%`}
+          sub={topQuota ? `${topQuota.used}/${topQuota.limit} lượt · ${shortModelName(topQuota.name)}` : 'Không có dữ liệu'}
+          status={quotaPct == null ? 'neutral' : quotaPct >= 95 ? 'danger' : quotaPct >= 80 ? 'warn' : 'ok'}
         />
       </div>
 
-      {/* 2. Lưới biểu đồ phân tích chuyên sâu cho Healthcare RAG */}
-      <div className="charts-grid">
-        {/* Biểu đồ 1: Med-FactCheck Phân bổ Bám nguồn */}
-        <div className="panel chart-panel">
-          <div className="panel-head">
-            <div>
-              <h3>🎯 Kiểm tra bám nguồn (Med-FactCheck)</h3>
-              <p className="panel-sub">Độ tin cậy trích dẫn y văn &amp; phát hiện ảo giác câu trả lời</p>
-            </div>
-          </div>
-          <FactCheckDonutChart dist={groundingDist} avg={avgGrounded} total={s.total_chats || 0} />
-        </div>
+      <div className="dash-bento-grid">
+        {/* (2a) LƯU LƯỢNG THEO NGÀY */}
+        <section className="dash-card bento-traffic">
+          <CardHead
+            title="Lưu lượng truy vấn theo ngày"
+            info="Mỗi cột là số câu hỏi trong một ngày có hoạt động (tối đa 14 ngày gần nhất), chia màu theo chất lượng câu trả lời. Di chuột để xem số liệu, nhấn vào cột để lọc nhật ký theo ngày đó."
+          >
+            {selectedDate && (
+              <button className="dash-chip" onClick={() => setSelectedDate(null)}>
+                Ngày {fmtDay(selectedDate)} ✕
+              </button>
+            )}
+          </CardHead>
+          <DailyQualityChart timeline={data.timeline || []} selectedDate={selectedDate} onSelectDate={toggleDate} />
+        </section>
 
-        {/* Biểu đồ 2: Cấu trúc Tri thức Knowledge Graph */}
-        <div className="panel chart-panel">
-          <div className="panel-head">
-            <div>
-              <h3>🕸️ Cấu trúc Tri thức Y khoa</h3>
-              <p className="panel-sub">Phân bổ thực thể theo bệnh, thuốc &amp; tác dụng phụ trong đồ thị</p>
-            </div>
-          </div>
-          <KnowledgeGraphBarChart entityTypes={graphStats.entity_types} />
-        </div>
+        {/* (2b) CHẤT LƯỢNG CÂU TRẢ LỜI */}
+        <section className="dash-card bento-quality">
+          <CardHead
+            title="Chất lượng câu trả lời"
+            info="Mức độ câu trả lời của AI khớp với tài liệu nguồn. Đạt chuẩn: ≥70%. Cần đối chiếu: 40–69%. Thiếu nguồn: <40% — có nguy cơ AI tự suy diễn. Nhấn vào một mức để lọc nhật ký."
+          >
+            {qualityFilter && (
+              <button className="dash-chip" onClick={() => setQualityFilter(null)}>
+                Bỏ lọc ✕
+              </button>
+            )}
+          </CardHead>
+          <QualityDonut dist={dist} activeTier={qualityFilter} onSelectTier={toggleQuality} />
+        </section>
 
-        {/* Biểu đồ 3: Xu hướng Truy vấn theo ngày */}
-        <div className="panel chart-panel">
-          <div className="panel-head">
-            <div>
-              <h3>📈 Xu hướng truy vấn &amp; Điểm bám nguồn</h3>
-              <p className="panel-sub">Số lượng câu hỏi y khoa và điểm trung thực theo ngày</p>
-            </div>
-          </div>
-          <TimelineTrendChart timeline={data.timeline || []} />
-        </div>
-
-        {/* Biểu đồ 4: Tỉ lệ gọi Model AI */}
-        <div className="panel chart-panel">
-          <div className="panel-head">
-            <div>
-              <h3>⚡ Tần suất sử dụng Model AI</h3>
-              <p className="panel-sub">Phân bổ tải giữa các phiên bản Gemini LLM</p>
-            </div>
-          </div>
-          <ModelUsageBars perModel={data.per_model || []} />
-        </div>
-      </div>
-
-      {/* 3. Hoạt động gần đây: Query Logs (Đã băm ID + PII Redaction) & Auth Logs */}
-      <div className="panel activity-section-panel">
-        <div className="panel-head activity-head-tabs">
-          <div>
-            <h3>📋 Nhật ký hoạt động gần đây (Anonymized &amp; PII Redacted)</h3>
-            <p className="panel-sub">Admin theo dõi được chất lượng truy vấn nhưng danh tính User được băm thành mã ẩn danh và PII/PHI tự động bị che mờ</p>
-          </div>
-          <div className="activity-tabs-switch">
-            <button
-              className={`act-tab-btn ${activityTab === 'chats' ? 'active' : ''}`}
-              onClick={() => setActivityTab('chats')}
-            >
-              💬 Truy vấn lâm sàng ({chatLogs.length})
-            </button>
-            <button
-              className={`act-tab-btn ${activityTab === 'auth' ? 'active' : ''}`}
-              onClick={() => setActivityTab('auth')}
-            >
-              🔐 Đăng nhập &amp; Hệ thống ({authLogs.length})
-            </button>
-          </div>
-        </div>
-
-        {/* BẢNG 1: TRUY VẤN LÂM SÀNG (ANONYMIZED USER ID + REDACTED PII) */}
-        {activityTab === 'chats' && (
-          <div className="activity-tab-content">
-            {chatLogs.length === 0 ? (
-              <div className="conv-empty">Chưa có câu hỏi nào từ người dùng.</div>
-            ) : (
-              <div className="log-table chat-activity-table">
-                <div className="log-head">
-                  <span>Thời gian</span>
-                  <span>ID Ẩn danh</span>
-                  <span>Câu hỏi lâm sàng (Đã che PII/PHI)</span>
-                  <span>Model AI</span>
-                  <span>Bám nguồn</span>
-                </div>
-                {chatLogs.slice(0, 10).map((r) => (
-                  <div key={r.id} className="log-row">
-                    <span className="log-time">{fmt(r.created_at)}</span>
-                    <span className="log-mono" title="ID ẩn danh bảo vệ danh tính người hỏi">{r.user}</span>
-                    <span className="log-detail query-text" title={r.query}>
-                      <RedactedText text={r.query} />
-                    </span>
-                    <span className="log-mono">{r.model}</span>
-                    <span><GroundingBadge ratio={r.grounded_ratio} /></span>
+        {/* (3) VIỆC CẦN XỬ LÝ */}
+        <section className="dash-card bento-issues">
+          <CardHead
+            title="Việc cần xử lý"
+            count={issues.length}
+            info="Các vấn đề hệ thống tự phát hiện, sắp theo mức ưu tiên — xử lý từ trên xuống. Câu trả lời thiếu nguồn thường cần bổ sung tài liệu cho chủ đề đó."
+          />
+          <div className="issue-list">
+            {issues.map((it) => (
+              <div key={it.key} className={`issue-row level-${it.level}`}>
+                <span className="issue-dot" />
+                <div className="issue-body">
+                  <div className="issue-title" title={it.kind === 'low' || it.kind === 'feedback' ? undefined : it.title}>
+                    {it.kind === 'low' ? <RedactedText text={it.title} /> : it.title}
                   </div>
-                ))}
+                  <div className="issue-meta">{it.meta}</div>
+                </div>
+                <div className="issue-actions">
+                  {it.kind === 'low' && (
+                    <>
+                      <button
+                        type="button"
+                        className="dash-btn"
+                        onClick={() => {
+                          focusChats();
+                          setQualityFilter('low');
+                          setSelectedLog(it.log);
+                        }}
+                      >
+                        Xem
+                      </button>
+                      <button type="button" className="dash-btn" onClick={() => onNavigateTab && onNavigateTab('docs')}>
+                        Bổ sung tài liệu
+                      </button>
+                    </>
+                  )}
+                  {it.kind === 'feedback' && (
+                    <button type="button" className="dash-btn" onClick={() => setActivityTab('feedback')}>
+                      Xem
+                    </button>
+                  )}
+                  {it.kind === 'doc' && (
+                    <button
+                      type="button"
+                      className="dash-btn primary"
+                      disabled={busyDocId === it.doc.id}
+                      onClick={() => handleToggleDoc(it.doc.id)}
+                    >
+                      {busyDocId === it.doc.id ? 'Đang bật…' : 'Bật lại'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {mediumCount > 0 && (
+              <div className="issue-row level-info">
+                <span className="issue-dot" />
+                <div className="issue-body">
+                  <div className="issue-title">{mediumCount} câu trả lời cần đối chiếu</div>
+                  <div className="issue-meta">Khớp một phần tài liệu (40–69%) — nên xem lại khi rảnh</div>
+                </div>
+                <div className="issue-actions">
+                  <button type="button" className="dash-btn" onClick={() => toggleQuality('medium')}>
+                    Lọc xem
+                  </button>
+                </div>
               </div>
             )}
-            <div className="activity-footer">
-              <button className="link-action-btn" onClick={() => onNavigateTab && onNavigateTab('chats')}>
-                Xem toàn bộ Query Logs &amp; Phản hồi đánh giá RAG →
-              </button>
-            </div>
-          </div>
-        )}
 
-        {/* BẢNG 2: XÁC THỰC & BẢO MẬT */}
-        {activityTab === 'auth' && (
-          <div className="activity-tab-content">
-            {authLogs.length === 0 ? (
-              <div className="conv-empty">Chưa có bản ghi xác thực nào.</div>
-            ) : (
-              <div className="log-table auth-activity-table">
-                <div className="log-head">
-                  <span>Thời gian</span>
-                  <span>ID Ẩn danh</span>
-                  <span>Hành động</span>
-                  <span>Chi tiết sự kiện</span>
-                </div>
-                {authLogs.slice(0, 10).map((r) => (
-                  <div key={r.id} className="log-row auth-row">
-                    <span className="log-time">{fmt(r.created_at)}</span>
-                    <span className="log-mono">{r.user}</span>
-                    <span><ActionBadge action={r.action} /></span>
-                    <span className="log-detail" title={r.detail}>{r.detail}</span>
-                  </div>
-                ))}
-              </div>
+            {issues.length === 0 && mediumCount === 0 && (
+              <div className="dash-empty-box">Không có vấn đề nào cần xử lý.</div>
             )}
-            <div className="activity-footer">
-              <button className="link-action-btn" onClick={() => onNavigateTab && onNavigateTab('auth-logs')}>
-                Xem toàn bộ nhật ký xác thực &amp; kiểm toán bảo mật →
+          </div>
+        </section>
+
+        {/* (4) NHẬT KÝ HOẠT ĐỘNG */}
+        <section className="dash-card bento-logs">
+          <CardHead
+            title="Nhật ký hoạt động"
+            info="Người gửi được ẩn danh thành mã User_xxxxx và thông tin cá nhân (tên, SĐT, …) được tự động che. Nhấn vào mã người dùng để lọc theo người đó, nhấn vào một dòng để xem chi tiết."
+          >
+            {activityTab === 'chats' && (
+              <input
+                type="search"
+                className="dash-search"
+                placeholder="Tìm câu hỏi hoặc mã người dùng"
+                value={quickSearch}
+                onChange={(e) => setQuickSearch(e.target.value)}
+              />
+            )}
+            <button
+              className="dash-icon-btn"
+              onClick={fetchDashboard}
+              disabled={refreshing}
+              title="Làm mới dữ liệu"
+              aria-label="Làm mới dữ liệu"
+            >
+              <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" className={refreshing ? 'spin' : ''}>
+                <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                <path d="M12.3 1.8v2.6H9.7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+          </CardHead>
+
+          <div className="dash-tabs" role="tablist">
+            <button className={activityTab === 'chats' ? 'active' : ''} onClick={() => setActivityTab('chats')}>
+              Truy vấn <span className="dash-tab-count">{filteredChats.length}</span>
+            </button>
+            <button className={activityTab === 'feedback' ? 'active' : ''} onClick={() => setActivityTab('feedback')}>
+              Báo lỗi <span className="dash-tab-count">{feedbackLogs.length}</span>
+            </button>
+            <button className={activityTab === 'auth' ? 'active' : ''} onClick={() => setActivityTab('auth')}>
+              Đăng nhập &amp; bảo mật <span className="dash-tab-count">{authLogs.length}</span>
+            </button>
+          </div>
+
+          {activityTab === 'chats' && hasActiveFilter && (
+            <div className="dash-filter-bar">
+              <span className="dash-filter-label">Đang lọc:</span>
+              {qualityFilter && (
+                <button className="dash-chip" onClick={() => setQualityFilter(null)}>
+                  {QUALITY_META[qualityFilter].label} ({QUALITY_META[qualityFilter].range}) ✕
+                </button>
+              )}
+              {selectedDate && (
+                <button className="dash-chip" onClick={() => setSelectedDate(null)}>
+                  Ngày {fmtDay(selectedDate)} ✕
+                </button>
+              )}
+              {selectedUserAnon && (
+                <button className="dash-chip" onClick={() => setSelectedUserAnon(null)}>
+                  {selectedUserAnon} ✕
+                </button>
+              )}
+              {quickSearch.trim() && (
+                <button className="dash-chip" onClick={() => setQuickSearch('')}>
+                  “{quickSearch.trim()}” ✕
+                </button>
+              )}
+              <button className="dash-link" onClick={clearAllFilters}>
+                Xoá tất cả
               </button>
             </div>
+          )}
+
+          <div className="dash-log-body">
+            {activityTab === 'chats' &&
+              (filteredChats.length === 0 ? (
+                <div className="dash-empty-box">
+                  <span>Không có truy vấn nào khớp bộ lọc.</span>
+                  {hasActiveFilter && (
+                    <button className="dash-link" onClick={clearAllFilters}>
+                      Xem lại toàn bộ ({chatLogs.length})
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="dash-table">
+                  <div className="dash-t-head chat-cols">
+                    <span>Thời gian</span>
+                    <span>Người dùng</span>
+                    <span>Câu hỏi</span>
+                    <span>Chất lượng</span>
+                  </div>
+                  <div className="dash-t-rows">
+                    {filteredChats.map((r) => {
+                      const isSel = selectedLog?.id === r.id;
+                      return (
+                        <div
+                          key={r.id}
+                          className={`dash-t-row chat-cols ${isSel ? 'selected' : ''}`}
+                          onClick={() => setSelectedLog(isSel ? null : r)}
+                        >
+                          <span className="log-time">{fmt(r.created_at)}</span>
+                          <span>
+                            <button
+                              type="button"
+                              className="user-anon-link"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleUser(r.user);
+                              }}
+                              title="Lọc các câu hỏi của người dùng này"
+                            >
+                              {r.user}
+                            </button>
+                          </span>
+                          <span className="log-detail" title={r.query}>
+                            <RedactedText text={r.query} />
+                          </span>
+                          <span>
+                            <GroundingBadge ratio={r.grounded_ratio} />
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+
+            {activityTab === 'feedback' &&
+              (feedbackLogs.length === 0 ? (
+                <div className="dash-empty-box">Chưa có báo lỗi nào từ người dùng.</div>
+              ) : (
+                <div className="dash-table">
+                  <div className="dash-t-head fb-cols">
+                    <span>Thời gian</span>
+                    <span>Người dùng</span>
+                    <span>Lý do</span>
+                    <span>Câu hỏi được báo lỗi</span>
+                  </div>
+                  <div className="dash-t-rows">
+                    {feedbackLogs.map((fb) => (
+                      <div key={fb.id} className="dash-t-row fb-cols static">
+                        <span className="log-time">{fmt(fb.created_at)}</span>
+                        <span className="log-mono">{fb.user}</span>
+                        <span className="log-detail" title={fb.reason}>{fb.reason}</span>
+                        <span className="log-detail" title={fb.query}>
+                          <RedactedText text={fb.query} />
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+
+            {activityTab === 'auth' &&
+              (authLogs.length === 0 ? (
+                <div className="dash-empty-box">Chưa có bản ghi đăng nhập hoặc bảo mật.</div>
+              ) : (
+                <div className="dash-table">
+                  <div className="dash-t-head fb-cols">
+                    <span>Thời gian</span>
+                    <span>Người dùng</span>
+                    <span>Sự kiện</span>
+                    <span>Chi tiết</span>
+                  </div>
+                  <div className="dash-t-rows">
+                    {authLogs.map((r) => (
+                      <div key={r.id} className="dash-t-row fb-cols static">
+                        <span className="log-time">{fmt(r.created_at)}</span>
+                        <span className="log-mono">{r.user}</span>
+                        <span>
+                          <ActionBadge action={r.action} />
+                        </span>
+                        <span className="log-detail" title={r.detail}>{r.detail}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
           </div>
-        )}
+
+          {activityTab === 'chats' && selectedLog ? (
+            <div className="dash-detail">
+              <div className="dash-detail-meta">
+                <span className="log-mono">{selectedLog.user}</span>
+                <span>{fmt(selectedLog.created_at)}</span>
+                <GroundingBadge ratio={selectedLog.grounded_ratio} showDetail />
+                {selectedLog.phi_redacted > 0 && <span>Đã che {selectedLog.phi_redacted} thông tin cá nhân</span>}
+              </div>
+              <div className="dash-detail-query">
+                <RedactedText text={selectedLog.query} />
+              </div>
+              <button className="dash-detail-close" onClick={() => setSelectedLog(null)} aria-label="Đóng chi tiết">
+                ✕
+              </button>
+            </div>
+          ) : (
+            <div className="dash-card-foot">
+              <button
+                className="dash-link"
+                onClick={() => onNavigateTab && onNavigateTab(activityTab === 'auth' ? 'auth-logs' : 'chats')}
+              >
+                Mở trang nhật ký đầy đủ →
+              </button>
+            </div>
+          )}
+        </section>
       </div>
-    </>
+    </div>
   );
 }
 
 /* ==========================================================================
-   2. TRANG CHI TIẾT 1: QUERY LOGS (PII REDACTED) & OPT-IN RAG EVALUATION
+   2. THÀNH PHẦN DÙNG CHUNG CỦA DASHBOARD
+   ========================================================================== */
+
+/** Biểu tượng "i" khoanh tròn — di chuột / focus để xem chú thích. Tooltip render qua portal để không bị thẻ cắt mất. */
+function InfoTip({ text, label = 'Xem chú thích' }) {
+  const ref = useRef(null);
+  const [pos, setPos] = useState(null);
+
+  const show = () => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const width = Math.min(320, window.innerWidth - 16);
+    const left = Math.max(8, Math.min(r.left + r.width / 2 - width / 2, window.innerWidth - width - 8));
+    const openUp = r.bottom + 170 > window.innerHeight;
+    setPos(
+      openUp
+        ? { left, width, bottom: window.innerHeight - r.top + 8 }
+        : { left, width, top: r.bottom + 8 }
+    );
+  };
+  const hide = () => setPos(null);
+
+  return (
+    <>
+      <span
+        ref={ref}
+        className="info-tip"
+        tabIndex={0}
+        role="button"
+        aria-label={label}
+        onMouseEnter={show}
+        onMouseLeave={hide}
+        onFocus={show}
+        onBlur={hide}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === 'Escape') hide();
+        }}
+      >
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+          <circle cx="8" cy="8" r="6.9" fill="none" stroke="currentColor" strokeWidth="1.3" />
+          <circle cx="8" cy="4.9" r="0.95" fill="currentColor" />
+          <path d="M8 7.2v4.3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+      </span>
+      {pos &&
+        createPortal(
+          <div className="info-tip-pop" role="tooltip" style={pos}>
+            {text}
+          </div>,
+          document.body
+        )}
+    </>
+  );
+}
+
+function CardHead({ title, info, count, children }) {
+  return (
+    <header className="dash-card-head">
+      <div className="dash-card-title-row">
+        <h3 className="dash-card-title">{title}</h3>
+        {count != null && count > 0 && <span className="dash-count">{count}</span>}
+        {info && <InfoTip text={info} />}
+      </div>
+      {children && <div className="dash-card-actions">{children}</div>}
+    </header>
+  );
+}
+
+function StatTile({ label, info, value, sub, status = 'neutral', active, onClick }) {
+  const clickable = Boolean(onClick);
+  return (
+    <div
+      className={`stat-tile status-${status} ${clickable ? 'clickable' : ''} ${active ? 'active' : ''}`}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={
+        clickable
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
+    >
+      <div className="stat-tile-head">
+        <span className="stat-tile-label">{label}</span>
+        {info && <InfoTip text={info} />}
+      </div>
+      <div className="stat-tile-value">{value}</div>
+      <div className="stat-tile-sub">{sub}</div>
+    </div>
+  );
+}
+
+/** Cột chồng theo ngày: mỗi cột = số câu hỏi, chia màu theo mức chất lượng (cùng bảng màu với biểu đồ tròn). */
+function DailyQualityChart({ timeline = [], selectedDate, onSelectDate }) {
+  const [hoverIdx, setHoverIdx] = useState(null);
+  const days = timeline.slice(-14);
+
+  if (days.length === 0) {
+    return <div className="dash-empty-box">Chưa có dữ liệu theo ngày.</div>;
+  }
+
+  const maxChats = Math.max(...days.map((d) => d.chats || 0), 1);
+  const top = maxChats <= 4 ? 4 : Math.ceil(maxChats / 2) * 2;
+  const ticks = [top, top / 2, 0];
+
+  const fallback = [...days].reverse().find((d) => (d.chats || 0) > 0) || days[days.length - 1];
+  const focus =
+    hoverIdx != null ? days[hoverIdx] : selectedDate ? days.find((d) => d.date === selectedDate) || fallback : fallback;
+
+  const parts = (d) => {
+    const chats = d.chats || 0;
+    // Dữ liệu cũ chưa có phân mức → coi toàn bộ là "chưa đánh giá"
+    const hasTiers = d.high != null || d.medium != null || d.low != null;
+    return {
+      high: hasTiers ? d.high || 0 : 0,
+      medium: hasTiers ? d.medium || 0 : 0,
+      low: hasTiers ? d.low || 0 : 0,
+      unrated: hasTiers ? d.unrated ?? Math.max(0, chats - (d.high || 0) - (d.medium || 0) - (d.low || 0)) : chats,
+    };
+  };
+
+  const fp = focus ? parts(focus) : null;
+
+  return (
+    <div className="daily-chart">
+      {focus && (
+        <div className="daily-readout">
+          <strong>{fmtDay(focus.date)}</strong>
+          <span>{focus.chats || 0} câu hỏi</span>
+          {(focus.chats || 0) > 0 && (
+            <span className="daily-readout-split">
+              <span className="q-high">{fp.high} đạt chuẩn</span>
+              <span className="q-medium">{fp.medium} cần đối chiếu</span>
+              <span className="q-low">{fp.low} thiếu nguồn</span>
+              {fp.unrated > 0 && <span className="q-none">{fp.unrated} chưa đánh giá</span>}
+            </span>
+          )}
+        </div>
+      )}
+
+      <div className="daily-stage">
+        <div className="daily-y">
+          <div className="daily-layer">
+            {ticks.map((t) => (
+              <span key={t} style={{ bottom: `${(t / top) * 100}%` }}>{t}</span>
+            ))}
+          </div>
+        </div>
+        <div className="daily-plot">
+          <div className="daily-layer">
+            {ticks.map((t) => (
+              <div key={t} className={`daily-grid ${t === 0 ? 'base' : ''}`} style={{ bottom: `${(t / top) * 100}%` }} />
+            ))}
+          </div>
+          <div className="daily-cols" onMouseLeave={() => setHoverIdx(null)}>
+            {days.map((d, idx) => {
+              const p = parts(d);
+              const chats = d.chats || 0;
+              const h = (n) => `${(n / top) * 100}%`;
+              return (
+                <button
+                  type="button"
+                  key={d.date}
+                  className={`daily-col ${selectedDate === d.date ? 'selected' : ''} ${
+                    selectedDate && selectedDate !== d.date ? 'dimmed' : ''
+                  }`}
+                  onMouseEnter={() => setHoverIdx(idx)}
+                  onFocus={() => setHoverIdx(idx)}
+                  onClick={() => onSelectDate && onSelectDate(d.date)}
+                  aria-label={`${fmtDay(d.date)}: ${chats} câu hỏi`}
+                >
+                  <span className="daily-bar-track">
+                    <span className="daily-stack" style={{ height: h(chats) }}>
+                      {chats > 0 && <span className="daily-total">{chats}</span>}
+                      <span className="seg seg-none" style={{ flexGrow: p.unrated }} />
+                      <span className="seg seg-low" style={{ flexGrow: p.low }} />
+                      <span className="seg seg-medium" style={{ flexGrow: p.medium }} />
+                      <span className="seg seg-high" style={{ flexGrow: p.high }} />
+                    </span>
+                  </span>
+                  <span className="daily-x">{fmtDay(d.date)}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      <div className="q-legend">
+        <span><i className="sw seg-high" />Đạt chuẩn</span>
+        <span><i className="sw seg-medium" />Cần đối chiếu</span>
+        <span><i className="sw seg-low" />Thiếu nguồn</span>
+        <span><i className="sw seg-none" />Chưa đánh giá</span>
+      </div>
+    </div>
+  );
+}
+
+/** Biểu đồ tròn chất lượng câu trả lời — nhấn vào một mức để lọc nhật ký. */
+function QualityDonut({ dist, activeTier, onSelectTier }) {
+  const [hover, setHover] = useState(null);
+  const counts = { high: dist.high || 0, medium: dist.medium || 0, low: dist.low || 0 };
+  const sum = counts.high + counts.medium + counts.low;
+  const pct = (n) => (sum ? Math.round((n / sum) * 100) : 0);
+
+  const C = 2 * Math.PI * 42;
+  let offset = 0;
+  const focus = hover || (activeTier && activeTier !== 'review' ? activeTier : null);
+  const tiers = ['high', 'medium', 'low'];
+
+  return (
+    <div className="quality-wrap">
+      <div className="quality-donut">
+        <svg viewBox="0 0 100 100">
+          <circle cx="50" cy="50" r="42" className="donut-track" />
+          {sum > 0 &&
+            tiers.map((t) => {
+              const len = (counts[t] / sum) * C;
+              const el = (
+                <circle
+                  key={t}
+                  cx="50"
+                  cy="50"
+                  r="42"
+                  className={`donut-seg seg-${t} ${focus && focus !== t ? 'dimmed' : ''}`}
+                  strokeDasharray={`${len} ${C - len}`}
+                  strokeDashoffset={-offset}
+                  onMouseEnter={() => setHover(t)}
+                  onMouseLeave={() => setHover(null)}
+                  onClick={() => onSelectTier && onSelectTier(t)}
+                />
+              );
+              offset += len;
+              return el;
+            })}
+        </svg>
+        <div className="donut-center">
+          <span className="donut-big">{sum ? `${pct(counts[focus || 'high'])}%` : '—'}</span>
+          <span className="donut-small">{sum ? QUALITY_META[focus || 'high'].label.toLowerCase() : 'chưa có dữ liệu'}</span>
+        </div>
+      </div>
+
+      <div className="quality-legend">
+        {tiers.map((t) => (
+          <button
+            key={t}
+            type="button"
+            className={`quality-row ${activeTier === t ? 'active' : ''}`}
+            onMouseEnter={() => setHover(t)}
+            onMouseLeave={() => setHover(null)}
+            onClick={() => onSelectTier && onSelectTier(t)}
+          >
+            <i className={`sw seg-${t}`} />
+            <span className="quality-name">
+              {QUALITY_META[t].label} <small>{QUALITY_META[t].range}</small>
+            </span>
+            <span className="quality-num">
+              <strong>{counts[t]}</strong> câu
+            </span>
+          </button>
+        ))}
+        <div className="quality-total">Tổng {sum} câu đã đánh giá</div>
+      </div>
+    </div>
+  );
+}
+
+function fmtDay(d) {
+  if (!d || d.length < 10) return d || '—';
+  return `${d.slice(8, 10)}/${d.slice(5, 7)}`;
+}
+
+/* ==========================================================================
+   3. TRANG CHI TIẾT 1: QUERY LOGS (PII REDACTED) & OPT-IN RAG EVALUATION
    ========================================================================== */
 function ChatLogsView() {
   const [logs, setLogs] = useState([]);
@@ -257,9 +914,10 @@ function ChatLogsView() {
   const filtered = logs.filter((item) => {
     if (search.trim()) {
       const q = search.toLowerCase();
-      const match = (item.query || '').toLowerCase().includes(q) ||
-                    (item.user || '').toLowerCase().includes(q) ||
-                    (item.model || '').toLowerCase().includes(q);
+      const match =
+        (item.query || '').toLowerCase().includes(q) ||
+        (item.user || '').toLowerCase().includes(q) ||
+        (item.model || '').toLowerCase().includes(q);
       if (!match) return false;
     }
     const r = item.grounded_ratio ?? 0;
@@ -387,7 +1045,7 @@ function ChatLogsView() {
 }
 
 /* ==========================================================================
-   3. TRANG CHI TIẾT 2: LỊCH SỬ XÁC THỰC & KIỂM TOÁN BẢO MẬT (AUDITOR VIEW)
+   4. TRANG CHI TIẾT 2: LỊCH SỬ XÁC THỰC & KIỂM TOÁN BẢO MẬT (AUDITOR VIEW)
    ========================================================================== */
 function AuthLogsView() {
   const [logs, setLogs] = useState([]);
@@ -405,8 +1063,9 @@ function AuthLogsView() {
     if (actionFilter !== 'all' && item.action !== actionFilter) return false;
     if (search.trim()) {
       const q = search.toLowerCase();
-      const match = (item.user || '').toLowerCase().includes(q) ||
-                    (item.detail || '').toLowerCase().includes(q);
+      const match =
+        (item.user || '').toLowerCase().includes(q) ||
+        (item.detail || '').toLowerCase().includes(q);
       if (!match) return false;
     }
     return true;
@@ -473,191 +1132,6 @@ function AuthLogsView() {
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-/* ==========================================================================
-   4. CÁC BIỂU ĐỒ Y KHOA SVG THUẦN (MODERN CLINICAL SVG CHARTS)
-   ========================================================================== */
-
-/** Biểu đồ Donut: Phân bổ Bám nguồn (Fact-Check) */
-function FactCheckDonutChart({ dist, avg }) {
-  const high = dist.high || 0;
-  const med = dist.medium || 0;
-  const low = dist.low || 0;
-  const sum = high + med + low;
-
-  const pHigh = sum ? (high / sum) * 100 : 0;
-  const pMed = sum ? (med / sum) * 100 : 0;
-  const pLow = sum ? (low / sum) * 100 : 0;
-
-  const C = 282.74;
-  const lenHigh = (pHigh / 100) * C;
-  const lenMed = (pMed / 100) * C;
-  const lenLow = (pLow / 100) * C;
-
-  return (
-    <div className="donut-chart-container">
-      <div className="donut-visual">
-        <svg viewBox="0 0 120 120" className="donut-svg">
-          <circle cx="60" cy="60" r="45" className="donut-bg" />
-          {sum > 0 ? (
-            <>
-              <circle
-                cx="60" cy="60" r="45"
-                className="donut-segment segment-high"
-                strokeDasharray={`${lenHigh} ${C - lenHigh}`}
-                strokeDashoffset="0"
-              />
-              <circle
-                cx="60" cy="60" r="45"
-                className="donut-segment segment-med"
-                strokeDasharray={`${lenMed} ${C - lenMed}`}
-                strokeDashoffset={-lenHigh}
-              />
-              <circle
-                cx="60" cy="60" r="45"
-                className="donut-segment segment-low"
-                strokeDasharray={`${lenLow} ${C - lenLow}`}
-                strokeDashoffset={-(lenHigh + lenMed)}
-              />
-            </>
-          ) : (
-            <circle cx="60" cy="60" r="45" className="donut-segment segment-empty" strokeDasharray={`${C} 0`} />
-          )}
-        </svg>
-        <div className="donut-center-text">
-          <span className="donut-val">{avg}</span>
-          <span className="donut-sub">Bám nguồn TB</span>
-        </div>
-      </div>
-
-      <div className="donut-legend">
-        <div className="legend-item">
-          <span className="legend-dot dot-high" />
-          <div className="legend-info">
-            <span className="legend-title">Bám nguồn cao (≥70%)</span>
-            <span className="legend-desc">Khớp y văn · An toàn lâm sàng</span>
-          </div>
-          <span className="legend-val">{high}</span>
-        </div>
-        <div className="legend-item">
-          <span className="legend-dot dot-med" />
-          <div className="legend-info">
-            <span className="legend-title">Cần lưu ý (40-69%)</span>
-            <span className="legend-desc">Khớp 1 phần · Cần đối chiếu</span>
-          </div>
-          <span className="legend-val">{med}</span>
-        </div>
-        <div className="legend-item">
-          <span className="legend-dot dot-low" />
-          <div className="legend-info">
-            <span className="legend-title">Cảnh báo ảo giác (&lt;40%)</span>
-            <span className="legend-desc">Thiếu trích dẫn · Rủi ro y khoa</span>
-          </div>
-          <span className="legend-val">{low}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** Biểu đồ Thanh ngang: Knowledge Graph Ontology Coverage */
-function KnowledgeGraphBarChart({ entityTypes = [] }) {
-  const max = Math.max(...entityTypes.map((t) => t.count), 1);
-
-  return (
-    <div className="kg-chart-container">
-      {entityTypes.length === 0 ? (
-        <div className="conv-empty">Chưa có dữ liệu thực thể đồ thị.</div>
-      ) : (
-        <div className="kg-bar-list">
-          {entityTypes.map((t, idx) => {
-            const p = Math.round((t.count / max) * 100);
-            return (
-              <div key={t.type} className="kg-bar-row">
-                <span className="kg-label">
-                  <span className="kg-icon">{getOntologyIcon(t.type)}</span>
-                  {t.type}
-                </span>
-                <div className="kg-track">
-                  <div
-                    className={`kg-fill fill-theme-${idx % 5}`}
-                    style={{ width: `${p}%` }}
-                  />
-                </div>
-                <span className="kg-val">{t.count} mục</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-      <div className="kg-footer-hint">
-        <span>ICD-10 Ontology · Phác đồ Đái tháo đường &amp; Thuốc thiết yếu WHO</span>
-      </div>
-    </div>
-  );
-}
-
-/** Biểu đồ Xu hướng Hoạt động & Điểm Bám nguồn theo ngày */
-function TimelineTrendChart({ timeline = [] }) {
-  if (!timeline || timeline.length === 0) {
-    return <div className="conv-empty">Chưa đủ dữ liệu mốc thời gian.</div>;
-  }
-
-  const maxTotal = Math.max(...timeline.map((t) => t.total_actions || 1), 1);
-
-  return (
-    <div className="timeline-chart-wrap">
-      <div className="timeline-bars">
-        {timeline.map((item) => {
-          const hPercent = Math.max(Math.round((item.total_actions / maxTotal) * 100), 12);
-          const shortDate = item.date ? item.date.slice(5) : '—';
-          return (
-            <div key={item.date} className="t-col">
-              <div className="t-col-track" title={`${item.date}: ${item.chats} câu hỏi (${item.total_actions} sự kiện), Bám nguồn: ${item.avg_grounded}%`}>
-                <div className="t-col-fill" style={{ height: `${hPercent}%` }}>
-                  <span className="t-col-val">{item.chats || item.total_actions}</span>
-                </div>
-              </div>
-              <span className="t-col-date">{shortDate}</span>
-              <span className="t-col-ground" title="Điểm bám nguồn TB">{item.avg_grounded ? `${item.avg_grounded}%` : '—'}</span>
-            </div>
-          );
-        })}
-      </div>
-      <div className="timeline-legend">
-        <span>📊 Chiều cao: Số lượt truy vấn</span>
-        <span>🎯 % bên dưới: Điểm bám nguồn TB theo ngày</span>
-      </div>
-    </div>
-  );
-}
-
-/** Biểu đồ Model Usage */
-function ModelUsageBars({ perModel = [] }) {
-  if (!perModel || perModel.length === 0) {
-    return <div className="conv-empty">Chưa có lượt truy vấn model nào.</div>;
-  }
-  const max = Math.max(...perModel.map((m) => m.count), 1);
-
-  return (
-    <div className="model-chart-wrap">
-      <div className="bar-list">
-        {perModel.map((m) => (
-          <div key={m.model} className="bar-row">
-            <span className="bar-label">{m.model}</span>
-            <span className="bar-track">
-              <span className="bar-fill" style={{ width: `${(m.count / max) * 100}%` }} />
-            </span>
-            <span className="bar-val">{m.count}</span>
-          </div>
-        ))}
-      </div>
-      <div className="model-tip-banner">
-        <span>⚡ Hệ thống kích hoạt Gemini 3.5 Flash với cơ chế Retry 503 &amp; Failover tự động.</span>
-      </div>
     </div>
   );
 }
@@ -875,7 +1349,6 @@ function Users() {
    6. CÁC HELPER VÀ BADGES
    ========================================================================== */
 
-/** Tô nổi bật các thẻ [REDACTED_NAME], [REDACTED_PHONE], [REDACTED_CCCD]... */
 function RedactedText({ text }) {
   if (!text) return '—';
   const parts = String(text).split(/(\[REDACTED_[A-Z]+\])/g);
@@ -894,40 +1367,26 @@ function RedactedText({ text }) {
   );
 }
 
-function StatCard({ icon, label, value, hint, highlight }) {
-  return (
-    <div className={`stat-card ${highlight ? 'card-highlight' : ''}`}>
-      <div className="stat-card-top">
-        <span className="stat-icon">{icon}</span>
-        {highlight && <span className="stat-kpi-badge">Chỉ số an toàn</span>}
-      </div>
-      <div className="stat-value">{value}</div>
-      <div className="stat-label">{label}</div>
-      {hint && <div className="stat-hint">{hint}</div>}
-    </div>
-  );
-}
-
 function GroundingBadge({ ratio, showDetail }) {
   if (ratio == null) return <span className="ground-pill pill-none">—</span>;
   const p = Math.round(ratio * 100);
   if (ratio >= 0.7) {
     return (
       <span className="ground-pill pill-safe" title={`Tỉ lệ bám nguồn: ${p}%`}>
-        🟢 {p}% {showDetail && '· An toàn'}
+        <i className="pill-dot" />{p}%{showDetail && ' · Đạt chuẩn'}
       </span>
     );
   }
   if (ratio >= 0.4) {
     return (
       <span className="ground-pill pill-warn" title={`Tỉ lệ bám nguồn: ${p}%`}>
-        🟡 {p}% {showDetail && '· Cần lưu ý'}
+        <i className="pill-dot" />{p}%{showDetail && ' · Cần đối chiếu'}
       </span>
     );
   }
   return (
     <span className="ground-pill pill-danger" title={`Tỉ lệ bám nguồn: ${p}%`}>
-      🔴 {p}% {showDetail && '· Nguy cơ ảo giác'}
+      <i className="pill-dot" />{p}%{showDetail && ' · Thiếu nguồn'}
     </span>
   );
 }
@@ -944,14 +1403,9 @@ function ActionBadge({ action }) {
   return <span className={`tag ${item.cls}`}>{item.label}</span>;
 }
 
-function getOntologyIcon(type) {
-  if (type.includes('Bệnh')) return '🩺';
-  if (type.includes('Nhóm thuốc')) return '💊';
-  if (type.includes('Thuốc')) return '🧪';
-  if (type.includes('Tác dụng phụ')) return '⚠️';
-  if (type.includes('Biến chứng')) return '🧬';
-  if (type.includes('Xét nghiệm')) return '🔬';
-  return '📌';
+function shortModelName(model) {
+  if (!model) return '—';
+  return model.replace(/^gemini-/, '');
 }
 
 function fmt(iso) {
