@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from './api.js';
 import { useAuth } from './auth.jsx';
@@ -6,9 +6,10 @@ import { useAuth } from './auth.jsx';
 export default function AdminPanel({ tab = 'dashboard', onSelectTab }) {
   const currentTab = tab || 'dashboard';
   const isDashboard = currentTab === 'dashboard';
+  const isLogs = currentTab === 'chats';
 
   return (
-    <div className={`page-pad admin-container ${isDashboard ? 'admin-viewport-mode' : ''}`}>
+    <div className={`page-pad admin-container ${isDashboard || isLogs ? 'admin-viewport-mode' : ''} ${isLogs ? 'logs-mode' : ''}`}>
       {/* Top tabs đồng bộ với AdminSidebar (chỉ hiển thị trên màn hình nhỏ) */}
       <div className="admin-tabs">
         <button
@@ -44,7 +45,7 @@ export default function AdminPanel({ tab = 'dashboard', onSelectTab }) {
       </div>
 
       {currentTab === 'dashboard' && <Dashboard onNavigateTab={onSelectTab} />}
-      {currentTab === 'chats' && <ChatLogsView />}
+      {currentTab === 'chats' && <ChatLogsView onNavigateTab={onSelectTab} />}
       {currentTab === 'auth-logs' && <AuthLogsView />}
       {currentTab === 'docs' && <SystemDocs />}
       {currentTab === 'users' && <Users />}
@@ -892,154 +893,606 @@ function fmtDay(d) {
 }
 
 /* ==========================================================================
-   3. TRANG CHI TIẾT 1: QUERY LOGS (PII REDACTED) & OPT-IN RAG EVALUATION
+   3. TRANG CHI TIẾT 1: NHẬT KÝ TRUY VẤN (ẨN DANH) & ĐÁNH GIÁ BÁM NGUỒN
+      (1) Tổng quan nhanh  → dải chỉ số (nhấn để lọc)
+      (2) Lọc & sắp xếp    → tìm kiếm, mức bám nguồn, model, thứ tự
+      (3) Nhật ký          → nhóm theo ngày, nhấn một dòng để xem chi tiết
    ========================================================================== */
-function ChatLogsView() {
+
+const TIER_ORDER = ['high', 'medium', 'low', 'none'];
+const TIER_META = {
+  high: { label: 'Đạt chuẩn', range: '≥70%' },
+  medium: { label: 'Cần đối chiếu', range: '40–69%' },
+  low: { label: 'Thiếu nguồn', range: '<40%' },
+  none: { label: 'Chưa đánh giá', range: '' },
+  review: { label: 'Cần xem lại', range: '<70%' },
+};
+const TIER_HINT = {
+  high: 'Câu trả lời khớp tốt với tài liệu nguồn.',
+  medium: 'Chỉ một phần câu trả lời khớp tài liệu — nên đối chiếu lại nội dung.',
+  low: 'Phần lớn câu trả lời không tìm thấy trong tài liệu — có nguy cơ AI tự suy diễn. Nên bổ sung tài liệu cho chủ đề này.',
+  none: 'Câu này không được chấm điểm (thường là câu chào hỏi hoặc không cần tra cứu tài liệu).',
+};
+const SORT_OPTIONS = [
+  { id: 'newest', label: 'Mới nhất trước' },
+  { id: 'oldest', label: 'Cũ nhất trước' },
+  { id: 'score', label: 'Bám nguồn thấp → cao' },
+];
+
+function tierOf(ratio) {
+  if (ratio == null) return 'none';
+  if (ratio >= 0.7) return 'high';
+  if (ratio >= 0.4) return 'medium';
+  return 'low';
+}
+
+function parseIso(iso) {
+  if (!iso) return null;
+  const d = new Date(iso + (iso.endsWith('Z') ? '' : 'Z'));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function localDayKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function dayLabel(d) {
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const key = localDayKey(d);
+  if (key === localDayKey(today)) return 'Hôm nay';
+  if (key === localDayKey(yesterday)) return 'Hôm qua';
+  const s = d.toLocaleDateString('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function fmtClock(d) {
+  return d ? d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) : '—';
+}
+
+function fmtFull(d) {
+  return d
+    ? d.toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' })
+    : '—';
+}
+
+/** Thanh đo mức bám nguồn: màu + % (nhãn chữ nằm trong tooltip và phần chi tiết). */
+function GroundMeter({ ratio }) {
+  const t = tierOf(ratio);
+  if (t === 'none') {
+    return (
+      <span className="ql-meter t-none" title={TIER_HINT.none}>
+        Chưa đánh giá
+      </span>
+    );
+  }
+  const p = Math.round(ratio * 100);
+  return (
+    <span className={`ql-meter t-${t}`} title={`Bám nguồn ${p}% · ${TIER_META[t].label}`}>
+      <span className="ql-meter-track" aria-hidden="true">
+        <span className="ql-meter-fill" style={{ width: `${Math.max(p, 4)}%` }} />
+      </span>
+      <span className="ql-meter-val">{p}%</span>
+      <span className="sr-only">{TIER_META[t].label}</span>
+    </span>
+  );
+}
+
+function ChatLogsView({ onNavigateTab }) {
   const [logs, setLogs] = useState([]);
   const [feedbacks, setFeedbacks] = useState([]);
-  const [subMode, setSubMode] = useState('query-logs'); // 'query-logs' | 'feedback'
-  const [filter, setFilter] = useState('all'); // 'all' | 'high' | 'medium' | 'low'
-  const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState('');
+  const [loadedAt, setLoadedAt] = useState(null);
 
-  useEffect(() => {
+  const [subMode, setSubMode] = useState('query-logs'); // 'query-logs' | 'feedback'
+  const [tier, setTier] = useState('all'); // 'all' | 'high' | 'medium' | 'low' | 'none' | 'review'
+  const [search, setSearch] = useState('');
+  const [model, setModel] = useState('all');
+  const [sort, setSort] = useState('newest');
+  const [userFilter, setUserFilter] = useState(null);
+  const [expandedId, setExpandedId] = useState(null);
+  const [openAnswers, setOpenAnswers] = useState(() => new Set());
+
+  const load = () => {
+    setRefreshing(true);
     api.adminActivity()
       .then((d) => {
         setLogs(d.chat_logs || []);
         setFeedbacks(d.feedback_logs || []);
+        setLoadedAt(new Date());
+        setError('');
       })
-      .finally(() => setLoading(false));
-  }, []);
+      .catch((e) => setError(e.message || 'Không tải được dữ liệu'))
+      .finally(() => {
+        setLoading(false);
+        setRefreshing(false);
+      });
+  };
 
-  const filtered = logs.filter((item) => {
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      const match =
-        (item.query || '').toLowerCase().includes(q) ||
-        (item.user || '').toLowerCase().includes(q) ||
-        (item.model || '').toLowerCase().includes(q);
-      if (!match) return false;
-    }
-    const r = item.grounded_ratio ?? 0;
-    if (filter === 'high') return r >= 0.7;
-    if (filter === 'medium') return r >= 0.4 && r < 0.7;
-    if (filter === 'low') return r < 0.4;
-    return true;
-  });
+  useEffect(load, []);
 
-  return (
-    <div className="panel">
-      <div className="panel-head activity-head-tabs">
-        <div>
-          <h3>💬 Nhật ký Truy vấn (PII Redacted) &amp; Đánh giá Chất lượng RAG</h3>
-          <p className="panel-sub">
-            Hiển thị câu hỏi dưới dạng ẩn danh (<code>User_XXXXX</code>) và tự động che thông tin nhạy cảm (<code>[REDACTED_NAME]</code>, <code>[REDACTED_PHONE]</code>…).
-          </p>
-        </div>
-        <div className="activity-tabs-switch">
-          <button
-            className={`act-tab-btn ${subMode === 'query-logs' ? 'active' : ''}`}
-            onClick={() => setSubMode('query-logs')}
-          >
-            📋 Query Logs ẩn danh ({logs.length})
-          </button>
-          <button
-            className={`act-tab-btn ${subMode === 'feedback' ? 'active' : ''}`}
-            onClick={() => setSubMode('feedback')}
-          >
-            🚩 Báo lỗi User đồng ý chia sẻ ({feedbacks.length})
-          </button>
+  // Chuẩn hoá một lần: gắn sẵn Date & mức bám nguồn cho mỗi dòng
+  const rows = useMemo(
+    () => logs.map((r) => ({ ...r, _date: parseIso(r.created_at), _tier: tierOf(r.grounded_ratio) })),
+    [logs]
+  );
+
+  const stats = useMemo(() => {
+    const counts = { high: 0, medium: 0, low: 0, none: 0 };
+    let sum = 0;
+    let pii = 0;
+    const users = new Set();
+    const models = new Map();
+    rows.forEach((r) => {
+      counts[r._tier] += 1;
+      if (r._tier !== 'none') sum += r.grounded_ratio;
+      pii += r.phi_redacted || 0;
+      if (r.user) users.add(r.user);
+      if (r.model && r.model !== '—') models.set(r.model, (models.get(r.model) || 0) + 1);
+    });
+    const rated = counts.high + counts.medium + counts.low;
+    return {
+      counts,
+      rated,
+      avg: rated ? Math.round((sum / rated) * 100) : null,
+      pHigh: rated ? Math.round((counts.high / rated) * 100) : null,
+      review: counts.medium + counts.low,
+      pii,
+      users: users.size,
+      models: [...models.entries()].sort((a, b) => b[1] - a[1]),
+    };
+  }, [rows]);
+
+  const q = search.trim().toLowerCase();
+
+  const filtered = useMemo(() => {
+    const out = rows.filter((r) => {
+      if (userFilter && r.user !== userFilter) return false;
+      if (model !== 'all' && r.model !== model) return false;
+      if (tier === 'review' ? !(r._tier === 'medium' || r._tier === 'low') : tier !== 'all' && r._tier !== tier) return false;
+      if (q) {
+        const hay = `${r.query || ''} ${r.user || ''} ${r.model || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    const time = (r) => (r._date ? r._date.getTime() : 0);
+    if (sort === 'oldest') out.sort((a, b) => time(a) - time(b));
+    else if (sort === 'score') out.sort((a, b) => (a.grounded_ratio ?? 2) - (b.grounded_ratio ?? 2) || time(b) - time(a));
+    else out.sort((a, b) => time(b) - time(a));
+    return out;
+  }, [rows, userFilter, model, tier, q, sort]);
+
+  // Nhóm theo ngày khi sắp theo thời gian; sắp theo điểm thì hiển thị một danh sách phẳng
+  const grouped = sort !== 'score';
+  const groups = useMemo(() => {
+    if (!grouped) return [{ key: 'all', label: null, items: filtered }];
+    const out = [];
+    filtered.forEach((r) => {
+      const key = r._date ? localDayKey(r._date) : 'unknown';
+      let g = out[out.length - 1];
+      if (!g || g.key !== key) {
+        g = { key, label: r._date ? dayLabel(r._date) : 'Không rõ ngày', items: [] };
+        out.push(g);
+      }
+      g.items.push(r);
+    });
+    return out;
+  }, [filtered, grouped]);
+
+  const filteredFeedbacks = useMemo(() => {
+    if (!q) return feedbacks;
+    return feedbacks.filter((fb) =>
+      `${fb.query || ''} ${fb.answer || ''} ${fb.reason || ''} ${fb.user || ''}`.toLowerCase().includes(q)
+    );
+  }, [feedbacks, q]);
+
+  const hasFilter = tier !== 'all' || model !== 'all' || Boolean(userFilter) || Boolean(q);
+  const clearFilters = () => {
+    setTier('all');
+    setModel('all');
+    setUserFilter(null);
+    setSearch('');
+  };
+  const pickUser = (u) => {
+    setSubMode('query-logs');
+    setUserFilter((cur) => (cur === u ? null : u));
+    setExpandedId(null);
+  };
+  const toggleRow = (id) => setExpandedId((cur) => (cur === id ? null : id));
+  const toggleAnswer = (id) =>
+    setOpenAnswers((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const tone = (v, okAt, warnAt) => (v == null ? 'neutral' : v >= okAt ? 'ok' : v >= warnAt ? 'warn' : 'danger');
+
+  if (loading) {
+    return (
+      <div className="logs-page">
+        <div className="dash-card logs-card">
+          <div className="dash-empty-box">Đang tải nhật ký truy vấn…</div>
         </div>
       </div>
+    );
+  }
 
-      {subMode === 'query-logs' ? (
-        <>
-          <div className="filter-bar">
-            <input
-              type="text"
-              className="ctl filter-search"
-              placeholder="🔍 Tìm nội dung câu hỏi, User_ID, model..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-            <div className="filter-pill-group">
-              <button className={`filter-pill ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
-                Tất cả ({logs.length})
-              </button>
-              <button className={`filter-pill pill-high ${filter === 'high' ? 'active' : ''}`} onClick={() => setFilter('high')}>
-                🟢 An toàn (≥70%)
-              </button>
-              <button className={`filter-pill pill-med ${filter === 'medium' ? 'active' : ''}`} onClick={() => setFilter('medium')}>
-                🟡 Cần lưu ý (40-69%)
-              </button>
-              <button className={`filter-pill pill-low ${filter === 'low' ? 'active' : ''}`} onClick={() => setFilter('low')}>
-                🔴 Ảo giác (&lt;40%)
-              </button>
-            </div>
-          </div>
+  return (
+    <div className="logs-page">
+      {/* (1) TỔNG QUAN NHANH */}
+      <div className="dash-kpi-strip">
+        <StatTile
+          label="Truy vấn"
+          info="Số câu hỏi trong nhật ký đang hiển thị (tối đa 50 câu gần nhất) và số người dùng ẩn danh đã gửi."
+          value={rows.length}
+          sub={`Từ ${stats.users} người dùng`}
+        />
+        <StatTile
+          label="Bám nguồn trung bình"
+          info="Trung bình tỉ lệ nội dung câu trả lời khớp với tài liệu nguồn, chỉ tính các câu đã được chấm điểm."
+          value={stats.avg == null ? '—' : `${stats.avg}%`}
+          sub={stats.rated ? `${stats.pHigh}% câu đạt chuẩn (≥70%)` : 'Chưa có câu nào được chấm'}
+          status={tone(stats.avg, 70, 40)}
+        />
+        <StatTile
+          label="Cần xem lại"
+          info="Các câu trả lời bám nguồn dưới 70%. Nhấn để lọc danh sách chỉ còn những câu này, sắp theo điểm thấp nhất trước."
+          value={stats.review}
+          sub={`${stats.counts.low} thiếu nguồn · ${stats.counts.medium} cần đối chiếu`}
+          status={stats.counts.low ? 'danger' : stats.counts.medium ? 'warn' : 'ok'}
+          active={subMode === 'query-logs' && tier === 'review'}
+          onClick={() => {
+            setSubMode('query-logs');
+            if (tier === 'review') {
+              setTier('all');
+            } else {
+              setTier('review');
+              setSort('score');
+            }
+          }}
+        />
+        <StatTile
+          label="Báo lỗi từ người dùng"
+          info="Số câu trả lời người dùng chủ động báo lỗi và đồng ý chia sẻ đoạn hội thoại (đã ẩn danh). Nhấn để xem."
+          value={feedbacks.length}
+          sub={feedbacks.length ? 'Nhấn để xem chi tiết' : 'Chưa có báo lỗi'}
+          status={feedbacks.length ? 'warn' : 'ok'}
+          active={subMode === 'feedback'}
+          onClick={() => setSubMode(subMode === 'feedback' ? 'query-logs' : 'feedback')}
+        />
+        <StatTile
+          label="Thông tin cá nhân đã che"
+          info="Tổng số thông tin định danh (tên, số điện thoại, email, CCCD…) được hệ thống tự động che trong các câu hỏi đang hiển thị."
+          value={stats.pii}
+          sub="Tự động che trước khi lưu nhật ký"
+        />
+      </div>
 
-          {loading ? (
-            <div className="conv-empty">Đang tải danh sách câu hỏi…</div>
-          ) : filtered.length === 0 ? (
-            <div className="conv-empty">Không tìm thấy truy vấn nào phù hợp.</div>
-          ) : (
-            <div className="log-table chat-activity-table full-table">
-              <div className="log-head">
-                <span>Thời gian</span>
-                <span>ID Ẩn danh</span>
-                <span>Nội dung câu hỏi (Đã che PII/PHI tự động)</span>
-                <span>Model AI</span>
-                <span>Fact-Check Overlap</span>
-              </div>
-              {filtered.map((r) => (
-                <div key={r.id} className="log-row">
-                  <span className="log-time">{fmt(r.created_at)}</span>
-                  <span className="log-mono">{r.user}</span>
-                  <span className="log-detail query-text expanded" title={r.query}>
-                    <RedactedText text={r.query} />
-                  </span>
-                  <span className="log-mono">{r.model}</span>
-                  <span><GroundingBadge ratio={r.grounded_ratio} showDetail /></span>
-                </div>
-              ))}
-            </div>
-          )}
-        </>
-      ) : (
-        <div style={{ marginTop: 12 }}>
-          {feedbacks.length === 0 ? (
-            <div className="conv-empty">
-              Chưa có phản hồi báo lỗi nào từ người dùng. (Ở màn hình Chat, người dùng có thể bấm <strong>&ldquo;🚩 Báo lỗi câu trả lời&rdquo;</strong> để đồng ý gửi đoạn hội thoại ẩn danh cho Admin kiểm tra).
-            </div>
-          ) : (
-            <div className="doc-table">
-              {feedbacks.map((fb) => (
-                <div key={fb.id} className="doc-row" style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 6 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
-                    <div>
-                      <span className="log-mono font-bold">{fb.user}</span>
-                      <span className="log-time" style={{ marginLeft: 10 }}>{fmt(fb.created_at)}</span>
-                      <span className="tag tag-admin_upload" style={{ marginLeft: 10 }}>🚩 {fb.reason}</span>
-                    </div>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      <span className="log-mono">{fb.model}</span>
-                      <GroundingBadge ratio={fb.grounded_ratio} />
-                    </div>
-                  </div>
-                  <div style={{ fontSize: 13 }}>
-                    <strong>Câu hỏi:</strong> <RedactedText text={fb.query} />
-                  </div>
-                  {fb.answer && (
-                    <div style={{ fontSize: 12.5, color: 'var(--muted)' }}>
-                      <strong>Phản hồi AI:</strong> <RedactedText text={fb.answer} />
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+      {error && (
+        <div className="logs-error">
+          Không tải được dữ liệu: {error}
+          <button className="dash-link" onClick={load}>Thử lại</button>
         </div>
       )}
+
+      {/* (2) + (3) NHẬT KÝ */}
+      <section className="dash-card logs-card">
+        <CardHead
+          title="Nhật ký truy vấn"
+          info="Người hỏi được ẩn danh thành mã User_xxxxx; tên, số điện thoại… trong câu hỏi được tự động che (ví dụ [REDACTED_NAME]). Hiển thị tối đa 50 truy vấn gần nhất. Nhấn vào mã người dùng để lọc theo người đó, nhấn vào một dòng để xem chi tiết."
+        >
+          {loadedAt && <span className="logs-updated">Cập nhật {fmtClock(loadedAt)}</span>}
+          <input
+            type="search"
+            className="dash-search"
+            placeholder={subMode === 'feedback' ? 'Tìm câu hỏi, câu trả lời, lý do…' : 'Tìm câu hỏi, mã người dùng, model…'}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            aria-label="Tìm kiếm"
+          />
+          <button
+            className="dash-icon-btn"
+            onClick={load}
+            disabled={refreshing}
+            title="Làm mới dữ liệu"
+            aria-label="Làm mới dữ liệu"
+          >
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" className={refreshing ? 'spin' : ''}>
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              <path d="M12.3 1.8v2.6H9.7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        </CardHead>
+
+        <div className="dash-tabs" role="tablist">
+          <button
+            role="tab"
+            aria-selected={subMode === 'query-logs'}
+            className={subMode === 'query-logs' ? 'active' : ''}
+            onClick={() => setSubMode('query-logs')}
+          >
+            Truy vấn <span className="dash-tab-count">{rows.length}</span>
+          </button>
+          <button
+            role="tab"
+            aria-selected={subMode === 'feedback'}
+            className={subMode === 'feedback' ? 'active' : ''}
+            onClick={() => setSubMode('feedback')}
+          >
+            Báo lỗi từ người dùng <span className="dash-tab-count">{feedbacks.length}</span>
+          </button>
+        </div>
+
+        {subMode === 'query-logs' ? (
+          <>
+            <div className="ql-toolbar">
+              <div className="ql-seg" role="group" aria-label="Lọc theo mức bám nguồn">
+                <button className={tier === 'all' ? 'active' : ''} onClick={() => setTier('all')}>
+                  Tất cả <span className="ql-seg-n">{rows.length}</span>
+                </button>
+                {TIER_ORDER.map((t) => (
+                  <button
+                    key={t}
+                    className={tier === t || (tier === 'review' && (t === 'medium' || t === 'low')) ? 'active' : ''}
+                    onClick={() => setTier(tier === t ? 'all' : t)}
+                    title={TIER_META[t].range ? `Bám nguồn ${TIER_META[t].range}` : TIER_HINT.none}
+                  >
+                    <i className={`ql-dot seg-${t}`} aria-hidden="true" />
+                    {TIER_META[t].label} <span className="ql-seg-n">{stats.counts[t]}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="ql-selects">
+                {stats.models.length > 1 && (
+                  <select className="ql-select" value={model} onChange={(e) => setModel(e.target.value)} aria-label="Lọc theo model">
+                    <option value="all">Mọi model</option>
+                    {stats.models.map(([m, n]) => (
+                      <option key={m} value={m}>
+                        {shortModelName(m)} ({n})
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <select className="ql-select" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sắp xếp">
+                  {SORT_OPTIONS.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {hasFilter && (
+              <div className="dash-filter-bar">
+                <span className="dash-filter-label">
+                  Hiển thị {filtered.length}/{rows.length} ·
+                </span>
+                {tier !== 'all' && (
+                  <button className="dash-chip" onClick={() => setTier('all')}>
+                    {TIER_META[tier].label}
+                    {TIER_META[tier].range && ` (${TIER_META[tier].range})`} ✕
+                  </button>
+                )}
+                {userFilter && (
+                  <button className="dash-chip" onClick={() => setUserFilter(null)}>
+                    {userFilter} ✕
+                  </button>
+                )}
+                {model !== 'all' && (
+                  <button className="dash-chip" onClick={() => setModel('all')}>
+                    {shortModelName(model)} ✕
+                  </button>
+                )}
+                {q && (
+                  <button className="dash-chip" onClick={() => setSearch('')}>
+                    “{search.trim()}” ✕
+                  </button>
+                )}
+                <button className="dash-link" onClick={clearFilters}>
+                  Xoá tất cả
+                </button>
+              </div>
+            )}
+
+            {filtered.length === 0 ? (
+              <div className="dash-empty-box">
+                <span>{rows.length ? 'Không có truy vấn nào khớp bộ lọc.' : 'Chưa có truy vấn nào được ghi lại.'}</span>
+                {hasFilter && (
+                  <button className="dash-link" onClick={clearFilters}>
+                    Xem lại toàn bộ ({rows.length})
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="ql-table">
+                <div className="ql-head ql-cols">
+                  <span>{grouped ? 'Giờ' : 'Thời gian'}</span>
+                  <span>Người dùng</span>
+                  <span>Câu hỏi</span>
+                  <span>Model</span>
+                  <span>Bám nguồn</span>
+                </div>
+                <div className="ql-rows">
+                  {groups.map((g) => (
+                    <Fragment key={g.key}>
+                      {g.label && (
+                        <div className="ql-day">
+                          <span>{g.label}</span>
+                          <span className="ql-day-n">{g.items.length} truy vấn</span>
+                        </div>
+                      )}
+                      {g.items.map((r) => {
+                        const open = expandedId === r.id;
+                        return (
+                          <Fragment key={r.id}>
+                            <div
+                              className={`ql-row ql-cols t-${r._tier} ${open ? 'open' : ''}`}
+                              role="button"
+                              tabIndex={0}
+                              aria-expanded={open}
+                              onClick={() => toggleRow(r.id)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  toggleRow(r.id);
+                                }
+                              }}
+                            >
+                              <span className="log-time ql-time">
+                                {grouped ? fmtClock(r._date) : fmt(r.created_at)}
+                              </span>
+                              <span className="ql-user">
+                                <button
+                                  type="button"
+                                  className={`user-anon-link ${userFilter === r.user ? 'is-active' : ''}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    pickUser(r.user);
+                                  }}
+                                  title={userFilter === r.user ? 'Bỏ lọc người dùng này' : 'Chỉ xem câu hỏi của người dùng này'}
+                                >
+                                  {r.user}
+                                </button>
+                              </span>
+                              <span className="ql-q">
+                                <span className="ql-q-text">
+                                  <RedactedText text={r.query} />
+                                </span>
+                                {r.phi_redacted > 0 && (
+                                  <span className="ql-pii" title={`Đã che ${r.phi_redacted} thông tin cá nhân`}>
+                                    Che {r.phi_redacted}
+                                  </span>
+                                )}
+                              </span>
+                              <span className="ql-model" title={r.model}>
+                                {shortModelName(r.model)}
+                              </span>
+                              <span className="ql-score">
+                                <GroundMeter ratio={r.grounded_ratio} />
+                              </span>
+                            </div>
+                            {open && (
+                              <div className="ql-detail">
+                                <dl className="ql-detail-meta">
+                                  <div>
+                                    <dt>Thời gian</dt>
+                                    <dd>{fmtFull(r._date)}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>Người dùng</dt>
+                                    <dd className="log-mono">{r.user}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>Model</dt>
+                                    <dd className="log-mono">{r.model}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>Bám nguồn</dt>
+                                    <dd>
+                                      <GroundingBadge ratio={r.grounded_ratio} showDetail />
+                                    </dd>
+                                  </div>
+                                  <div>
+                                    <dt>Thông tin đã che</dt>
+                                    <dd>{r.phi_redacted || 0}</dd>
+                                  </div>
+                                </dl>
+                                <p className={`ql-detail-hint t-${r._tier}`}>{TIER_HINT[r._tier]}</p>
+                                <div className="ql-detail-actions">
+                                  <button type="button" className="dash-btn" onClick={() => pickUser(r.user)}>
+                                    {userFilter === r.user ? 'Bỏ lọc người dùng' : `Xem mọi câu của ${r.user}`}
+                                  </button>
+                                  {(r._tier === 'low' || r._tier === 'medium') && onNavigateTab && (
+                                    <button type="button" className="dash-btn primary" onClick={() => onNavigateTab('docs')}>
+                                      Bổ sung tài liệu
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </Fragment>
+                        );
+                      })}
+                    </Fragment>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="ql-fb-list">
+            {filteredFeedbacks.length === 0 ? (
+              <div className="dash-empty-box">
+                {feedbacks.length ? (
+                  <>
+                    <span>Không có báo lỗi nào khớp từ khoá.</span>
+                    <button className="dash-link" onClick={() => setSearch('')}>
+                      Xoá tìm kiếm
+                    </button>
+                  </>
+                ) : (
+                  <span>
+                    Chưa có báo lỗi nào. Ở màn hình Chat, người dùng có thể bấm <strong>“Báo lỗi câu trả lời”</strong> để
+                    gửi đoạn hội thoại (đã ẩn danh) cho quản trị viên kiểm tra.
+                  </span>
+                )}
+              </div>
+            ) : (
+              filteredFeedbacks.map((fb) => {
+                const hasAnswer = fb.answer && fb.answer !== '—';
+                const ansOpen = openAnswers.has(fb.id);
+                return (
+                  <article key={fb.id} className="ql-fb">
+                    <header className="ql-fb-head">
+                      <span className="ql-fb-reason">{fb.reason}</span>
+                      <button
+                        type="button"
+                        className="user-anon-link"
+                        onClick={() => pickUser(fb.user)}
+                        title="Xem các câu hỏi của người dùng này"
+                      >
+                        {fb.user}
+                      </button>
+                      <span className="log-time">{fmt(fb.created_at)}</span>
+                      <span className="ql-fb-spacer" />
+                      <span className="ql-model" title={fb.model}>
+                        {shortModelName(fb.model)}
+                      </span>
+                      <GroundingBadge ratio={fb.grounded_ratio} showDetail />
+                    </header>
+                    <div className="ql-fb-block">
+                      <div className="ql-fb-label">Câu hỏi</div>
+                      <div className="ql-fb-q">
+                        <RedactedText text={fb.query} />
+                      </div>
+                    </div>
+                    {hasAnswer && (
+                      <div className="ql-fb-block">
+                        <div className="ql-fb-label">Câu trả lời của AI</div>
+                        <div className={`ql-fb-a ${ansOpen ? '' : 'clamp'}`}>
+                          <RedactedText text={fb.answer} />
+                        </div>
+                        {fb.answer.length > 220 && (
+                          <button type="button" className="dash-link ql-fb-more" onClick={() => toggleAnswer(fb.id)}>
+                            {ansOpen ? 'Thu gọn' : 'Xem đầy đủ'}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </article>
+                );
+              })
+            )}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
