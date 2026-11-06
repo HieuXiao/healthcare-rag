@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from './api.js';
 import { useAuth } from './auth.jsx';
 import Sidebar from './Sidebar.jsx';
-import AdminSidebar from './AdminSidebar.jsx';
 import ChatView from './ChatView.jsx';
 import SaveBox from './SaveBox.jsx';
 import AdminPanel from './AdminPanel.jsx';
@@ -11,16 +10,16 @@ import Profile from './Profile.jsx';
 const FALLBACK_MODELS = ['gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-flash-latest', 'gemini-flash-lite-latest'];
 
 const VIEW_TITLES = {
-  chat: 'Trò chuyện lâm sàng',
-  savebox: 'Save box — Tài liệu của tôi',
+  chat: 'Phòng khám (Chat) — Trợ lý Y tế RAG lâm sàng',
+  savebox: 'Save box — Tài liệu y khoa cá nhân',
   admin: 'Quản trị hệ thống',
   profile: 'Hồ sơ cá nhân',
 };
 
 const ADMIN_TITLES = {
   dashboard: 'Quản trị hệ thống — Tổng quan & Biểu đồ y khoa',
-  chats: 'Quản trị hệ thống — Nhật ký Truy vấn & Bám nguồn',
-  'auth-logs': 'Quản trị hệ thống — Lịch sử Xác thực & Bảo mật',
+  chats: 'Quản trị hệ thống — Truy vấn & Bám nguồn (Med-FactCheck)',
+  'auth-logs': 'Quản trị hệ thống — Xác thực & Bảo mật',
   docs: 'Quản trị hệ thống — Tài liệu gốc hệ thống',
   users: 'Quản trị hệ thống — Quản lý người dùng',
 };
@@ -46,11 +45,9 @@ function parseHash(userRole) {
 }
 
 function getInitialViewState(userRole) {
-  // 1. Ưu tiên URL Hash (khi F5 hoặc mở link trực tiếp)
   const fromHash = parseHash(userRole);
   if (fromHash) return fromHash;
 
-  // 2. Fallback sang localStorage
   try {
     const savedView = localStorage.getItem('medrag-active-view');
     const savedTab = localStorage.getItem('medrag-admin-tab') || 'dashboard';
@@ -78,7 +75,6 @@ export default function Workspace({ theme, toggleTheme }) {
   const [selectedModel, setSelectedModel] = useState(FALLBACK_MODELS[0]);
   const [userMenu, setUserMenu] = useState(false);
 
-  // Cập nhật view và lưu vào hash + localStorage
   const updateRoute = useCallback((newView, newAdminTab = adminTab) => {
     setView(newView);
     setAdminTab(newAdminTab);
@@ -93,7 +89,6 @@ export default function Workspace({ theme, toggleTheme }) {
     } catch { /* ignore */ }
   }, [adminTab]);
 
-  // Đồng bộ hash URL lúc mount và khi người dùng bấm Back/Forward trình duyệt
   useEffect(() => {
     if (view === 'admin') {
       window.history.replaceState(null, '', `#admin/${adminTab}`);
@@ -167,28 +162,19 @@ export default function Workspace({ theme, toggleTheme }) {
 
   return (
     <div className="workspace">
-      {isCurrentAdmin ? (
-        <AdminSidebar
-          tab={adminTab}
-          onSelectTab={handleSelectAdminTab}
-          onSwitchToChat={() => handleNavigate('chat')}
-          onNavigate={handleNavigate}
-          collapsed={collapsed}
-          onToggleCollapse={() => setCollapsed((c) => !c)}
-        />
-      ) : (
-        <Sidebar
-          conversations={conversations}
-          activeConvId={activeConvId}
-          view={view}
-          collapsed={collapsed}
-          onToggleCollapse={() => setCollapsed((c) => !c)}
-          onNewChat={handleNewChat}
-          onSelectConv={handleSelectConv}
-          onDeleteConv={handleDeleteConv}
-          onNavigate={handleNavigate}
-        />
-      )}
+      <Sidebar
+        conversations={conversations}
+        activeConvId={activeConvId}
+        view={view}
+        adminTab={adminTab}
+        collapsed={collapsed}
+        onToggleCollapse={() => setCollapsed((c) => !c)}
+        onNewChat={handleNewChat}
+        onSelectConv={handleSelectConv}
+        onDeleteConv={handleDeleteConv}
+        onNavigate={handleNavigate}
+        onSelectAdminTab={handleSelectAdminTab}
+      />
 
       <div className="main-col">
         <header className="topbar">
@@ -204,7 +190,7 @@ export default function Workspace({ theme, toggleTheme }) {
                 <span className="usage-dot" style={{ '--p': `${currentUsage}%` }} title={`Usage ${currentUsage}%`} />
               </div>
             )}
-            <button className="ctl theme-toggle" onClick={toggleTheme} title="Sáng/tối">
+            <button className="ctl theme-toggle" onClick={toggleTheme} title="Đổi giao diện Sáng/Tối">
               {theme === 'dark' ? '☀️' : '🌙'}
             </button>
             <div className="user-menu-wrap">
@@ -215,9 +201,9 @@ export default function Workspace({ theme, toggleTheme }) {
               </button>
               {userMenu && (
                 <div className="user-dropdown" onMouseLeave={() => setUserMenu(false)}>
-                  <button onClick={() => { handleNavigate('profile'); setUserMenu(false); }}>👤 Hồ sơ</button>
-                  <button onClick={() => { handleNavigate('savebox'); setUserMenu(false); }}>📁 Save box</button>
-                  {user.role === 'admin' && <button onClick={() => { handleNavigate('admin'); setUserMenu(false); }}>🛡️ Quản trị</button>}
+                  <button onClick={() => { handleNavigate('profile'); setUserMenu(false); }}>👤 Hồ sơ cá nhân</button>
+                  <button onClick={() => { handleNavigate('savebox'); setUserMenu(false); }}>📁 Save box của tôi</button>
+                  {user.role === 'admin' && <button onClick={() => { handleNavigate('admin'); setUserMenu(false); }}>🛡️ Quản trị hệ thống</button>}
                   <div className="dropdown-sep" />
                   <button className="danger" onClick={logout}>🚪 Đăng xuất</button>
                 </div>
