@@ -35,7 +35,7 @@ function parseHash(userRole) {
     const validViews = ['chat', 'savebox', 'profile', 'admin'];
     if (validViews.includes(mainView)) {
       if (mainView === 'admin' && userRole !== 'admin') {
-        return { view: 'chat', adminTab: 'dashboard' };
+        return { view: userRole === 'admin' ? 'admin' : 'chat', adminTab: 'dashboard' };
       }
       const validAdminTabs = ['dashboard', 'chats', 'auth-logs', 'docs', 'users'];
       const resolvedAdminTab = validAdminTabs.includes(subTab) ? subTab : 'dashboard';
@@ -57,13 +57,13 @@ function getInitialViewState(userRole) {
     const validViews = ['chat', 'savebox', 'profile', 'admin'];
     if (savedView && validViews.includes(savedView)) {
       if (savedView === 'admin' && userRole !== 'admin') {
-        return { view: 'chat', adminTab: 'dashboard' };
+        return { view: userRole === 'admin' ? 'admin' : 'chat', adminTab: 'dashboard' };
       }
       return { view: savedView, adminTab: savedTab };
     }
   } catch { /* ignore */ }
 
-  return { view: 'chat', adminTab: 'dashboard' };
+  return { view: userRole === 'admin' ? 'admin' : 'chat', adminTab: 'dashboard' };
 }
 
 export default function Workspace({ theme, toggleTheme }) {
