@@ -265,6 +265,8 @@ Thiết kế tối ưu chi phí (**self-host $0**, chỉ tốn phí gọi API Ge
 | `GET/POST` | `/api/documents`, `/api/documents/upload` | Danh sách tài liệu và Upload tài liệu riêng vào Save box |
 | `PUT/DELETE` | `/api/documents/{id}/toggle`, `/api/documents/{id}` | Bật/tắt hoặc xoá tài liệu cá nhân trong Save box |
 | `GET` | `/api/admin/activity` | Thống kê KPI, biểu đồ Donut, timeline 14 ngày, KG ontology, log truy vấn & bảo mật |
-| `GET/POST` | `/api/admin/documents`, `/api/admin/documents/upload` | Danh sách và Upload tài liệu gốc hệ thống |
-| `PUT/DELETE` | `/api/admin/documents/{id}/toggle`, `/api/admin/documents/{id}` | Bật/tắt hoặc xoá tài liệu gốc hệ thống |
+| `GET/POST` | `/api/admin/documents`, `/api/admin/documents/upload` | Danh sách (kèm `status` phân tích) và Upload tài liệu gốc hệ thống |
+| `PUT/DELETE` | `/api/admin/documents/{id}/toggle`, `/api/admin/documents/{id}` | Bật/tắt hoặc xoá tài liệu gốc hệ thống (xoá khối gốc: file chuyển sang `backend/data/removed/`) |
+| `PUT` | `/api/admin/documents/{id}` | Đổi tên / ghi chú tài liệu hệ thống (cập nhật luôn tên nguồn trích dẫn trong index) |
+| `POST` | `/api/admin/documents/{id}/reindex` | Phân tích lại tài liệu upload (upload mới tự phân tích nền: OCR → chunk → embed → BM25) |
 | `GET` | `/api/admin/users` | Danh sách bác sĩ/người dùng, vai trò và thống kê tương tác |

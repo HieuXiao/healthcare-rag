@@ -40,7 +40,8 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
 
 from core import index_store
-from core.db import BASE_INDEX_MARKER, SessionLocal, engine, resolve_stored_path
+from core.db import (BASE_INDEX_MARKER, BASE_NOTE, SessionLocal, base_display_name, engine,
+                     resolve_stored_path)
 from core.models import Base, Document
 
 
@@ -217,6 +218,13 @@ def from_scratch(db, dry_run: bool, include_user_docs: bool) -> None:
     if base_row is not None:
         base_row.num_chunks = len(base_nodes)
         base_row.indexed = len(base_nodes) > 0
+        if base_files:
+            # Node mới mang file_name thật -> tên hiển thị cũng theo file thật trong backend/data.
+            base_row.filename = base_display_name(base_files)
+    elif base_files:
+        db.add(Document(scope="system", owner_id=None, filename=base_display_name(base_files),
+                        stored_path=BASE_INDEX_MARKER, num_chunks=len(base_nodes),
+                        active=True, indexed=len(base_nodes) > 0, note=BASE_NOTE))
     for doc in candidates:
         if doc.id in doc_nodes:
             doc.num_chunks = len(doc_nodes[doc.id])

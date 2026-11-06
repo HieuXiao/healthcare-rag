@@ -127,6 +127,7 @@ def delete_nodes_by_doc_keys(index, doc_keys: Iterable[str]) -> int:
     """
     Xoá mọi node có metadata doc_key thuộc ``doc_keys`` khỏi vector store,
     index struct VÀ docstore (docstore là nguồn corpus BM25). Không persist.
+    ``None`` trong ``doc_keys`` khớp các node không có doc_key (khối tài liệu gốc).
     """
     keys = set(doc_keys)
     if not keys:
@@ -141,8 +142,37 @@ def delete_nodes_by_doc_keys(index, doc_keys: Iterable[str]) -> int:
     return len(target_ids)
 
 
-def delete_nodes_by_doc_key(doc_key: str, persist: bool = True):
-    """Xoá mọi node thuộc 1 tài liệu (theo metadata doc_key)."""
+def set_file_name_by_doc_key(index, doc_key: Optional[str], file_name: str) -> int:
+    """
+    Đổi metadata ``file_name`` (tên hiện trong trích dẫn nguồn) của mọi node thuộc
+    ``doc_key`` (None = khối tài liệu gốc). Ghi vào docstore — nguồn node khi truy
+    xuất vector lẫn corpus BM25. Không persist, không cần embed lại.
+    """
+    docstore = index.storage_context.docstore
+    changed = [n for n in docstore.docs.values()
+               if (n.metadata or {}).get("doc_key") == doc_key
+               and n.metadata.get("file_name") != file_name]
+    for n in changed:
+        n.metadata["file_name"] = file_name
+    if changed:
+        docstore.add_documents(changed, allow_update=True)
+    return len(changed)
+
+
+def rename_doc_nodes(doc_key: Optional[str], file_name: str, persist: bool = True) -> int:
+    """Đổi tên nguồn trích dẫn của 1 tài liệu trong index đang chạy và lưu đĩa."""
+    with _lock:
+        index = get_index()
+        n = set_file_name_by_doc_key(index, doc_key, file_name)
+        if n:
+            if persist:
+                index.storage_context.persist(persist_dir=str(resolve_vector_store_dir()))
+            invalidate_nodes_cache()
+        return n
+
+
+def delete_nodes_by_doc_key(doc_key: Optional[str], persist: bool = True):
+    """Xoá mọi node thuộc 1 tài liệu (theo metadata doc_key; None = khối tài liệu gốc)."""
     with _lock:
         index = get_index()
         n = delete_nodes_by_doc_keys(index, [doc_key])

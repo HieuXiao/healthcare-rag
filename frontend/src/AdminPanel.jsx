@@ -1139,54 +1139,127 @@ function AuthLogsView() {
 /* ==========================================================================
    5. SYSTEM DOCS (DATA ISOLATION) & USERS (SEPARATION OF DUTIES / RBAC)
    ========================================================================== */
+const DOC_POLL_MS = 2500;
+
+function DocStatus({ doc }) {
+  if (doc.status === 'processing') {
+    return <span className="doc-status busy">⏳ Đang phân tích…</span>;
+  }
+  if (doc.status === 'error') {
+    return <span className="doc-status err" title={doc.error}>⚠️ Lỗi phân tích</span>;
+  }
+  if (doc.status === 'pending') {
+    return <span className="doc-status off" title="Chưa có trong chỉ mục truy xuất">Chưa phân tích</span>;
+  }
+  return (
+    <span className={`doc-status ${doc.active ? 'on' : 'off'}`}>
+      {doc.active ? 'Đang truy xuất' : 'Đã tạm dừng'}
+    </span>
+  );
+}
+
 function SystemDocs() {
   const [docs, setDocs] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [note, setNote] = useState('');
+  const [editing, setEditing] = useState(null); // { id, filename, note }
+  const [savingId, setSavingId] = useState(null);
   const fileRef = useRef(null);
+  const prevStatus = useRef({});
 
   const load = () =>
     api.adminDocuments()
-      .then((d) => setDocs(d.documents || []))
+      .then((d) => {
+        const list = d.documents || [];
+        // Báo khi một tài liệu vừa phân tích xong (processing -> ready/error).
+        list.forEach((doc) => {
+          if (prevStatus.current[doc.id] !== 'processing') return;
+          if (doc.status === 'ready') {
+            setNotice(`Đã phân tích xong "${doc.filename}" (${doc.num_chunks} đoạn) — sẵn sàng cho chat.`);
+          } else if (doc.status === 'error') {
+            setError(`Phân tích "${doc.filename}" thất bại: ${doc.error}`);
+          }
+        });
+        prevStatus.current = Object.fromEntries(list.map((doc) => [doc.id, doc.status]));
+        setDocs(list);
+      })
       .catch((e) => setError(e.message));
 
   useEffect(() => { load(); }, []);
 
+  // Tự làm mới khi còn tài liệu đang phân tích nền.
+  const anyProcessing = docs.some((d) => d.status === 'processing');
+  useEffect(() => {
+    if (!anyProcessing) return undefined;
+    const t = setTimeout(load, DOC_POLL_MS);
+    return () => clearTimeout(t);
+  }, [docs, anyProcessing]);
+
+  const run = async (fn) => {
+    setError('');
+    setNotice('');
+    try {
+      await fn();
+      await load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
   const onUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setError('');
     setUploading(true);
-    try {
+    await run(async () => {
       await api.adminUploadDocument(file, note);
       setNote('');
-      if (fileRef.current) fileRef.current.value = '';
-      await load();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setUploading(false);
-    }
+      setNotice(`Đã tải lên "${file.name}". Hệ thống đang tự phân tích (OCR, chia đoạn, nhúng vector)…`);
+    });
+    if (fileRef.current) fileRef.current.value = '';
+    setUploading(false);
   };
 
-  const onToggle = async (id) => {
-    try {
-      await api.adminToggleDocument(id);
-      await load();
-    } catch (e) {
-      setError(e.message);
-    }
+  const onToggle = (id) => run(() => api.adminToggleDocument(id));
+
+  const onReindex = (id) => run(() => api.adminReindexDocument(id));
+
+  const onDelete = (d) => {
+    const msg = d.is_base
+      ? `Xoá khối tài liệu gốc "${d.filename}"?\n\nCác đoạn sẽ bị gỡ khỏi chỉ mục truy xuất và file gốc được chuyển sang backend/data/removed/ (khôi phục: chuyển file về rồi chạy rebuild_index.py --from-scratch).`
+      : `Xoá "${d.filename}" khỏi hệ thống tri thức dùng chung?\n\nFile và toàn bộ đoạn đã phân tích sẽ bị xoá vĩnh viễn.`;
+    if (!window.confirm(msg)) return;
+    if (editing?.id === d.id) setEditing(null);
+    run(async () => {
+      await api.adminDeleteDocument(d.id);
+      setNotice(`Đã xoá "${d.filename}".`);
+    });
   };
 
-  const onDelete = async (id) => {
-    if (!window.confirm('Xoá tài liệu gốc này khỏi hệ thống tri thức dùng chung?')) return;
-    try {
-      await api.adminDeleteDocument(id);
-      await load();
-    } catch (e) {
-      setError(e.message);
+  const startEdit = (d) => {
+    setError('');
+    setEditing({ id: d.id, filename: d.filename, note: d.note || '' });
+  };
+
+  const saveEdit = async () => {
+    if (!editing) return;
+    const name = editing.filename.trim();
+    if (!name) {
+      setError('Tên tài liệu không được để trống.');
+      return;
     }
+    setSavingId(editing.id);
+    await run(async () => {
+      await api.adminUpdateDocument(editing.id, { filename: name, note: editing.note });
+      setEditing(null);
+    });
+    setSavingId(null);
+  };
+
+  const onEditKey = (e) => {
+    if (e.key === 'Enter') saveEdit();
+    if (e.key === 'Escape') setEditing(null);
   };
 
   return (
@@ -1209,43 +1282,91 @@ function SystemDocs() {
           onChange={(e) => setNote(e.target.value)}
         />
         <label className={`upload-btn ${uploading ? 'disabled' : ''}`}>
-          {uploading ? 'Đang nhúng vector…' : '⬆️ Nạp tài liệu hệ thống'}
+          {uploading ? 'Đang tải lên…' : '⬆️ Nạp tài liệu hệ thống'}
           <input ref={fileRef} type="file" accept=".pdf,.txt,.md" onChange={onUpload} disabled={uploading} hidden />
         </label>
       </div>
 
       {error && <div className="auth-error" style={{ marginBottom: 12 }}>⚠️ {error}</div>}
+      {notice && <div className="doc-notice">✅ {notice}</div>}
 
       {docs.length === 0 ? (
         <div className="conv-empty">Chưa có tài liệu gốc nào được nạp.</div>
       ) : (
         <div className="doc-table">
-          {docs.map((d) => (
-            <div key={d.id} className="doc-row">
-              <span className="doc-icon">{d.is_base ? '📘' : '📄'}</span>
-              <div className="doc-main">
-                <div className="doc-name">
-                  {d.filename} {d.is_base && <span className="base-tag">gốc</span>}
+          {docs.map((d) => {
+            const busy = d.status === 'processing';
+            const isEditing = editing?.id === d.id;
+            return (
+              <div key={d.id} className="doc-row">
+                <span className="doc-icon">{d.is_base ? '📘' : '📄'}</span>
+                <div className="doc-main">
+                  {isEditing ? (
+                    <div className="doc-edit">
+                      <input
+                        className="ctl"
+                        value={editing.filename}
+                        onChange={(e) => setEditing({ ...editing, filename: e.target.value })}
+                        onKeyDown={onEditKey}
+                        placeholder="Tên tài liệu"
+                        aria-label="Tên tài liệu"
+                        maxLength={300}
+                        autoFocus
+                      />
+                      <input
+                        className="ctl"
+                        value={editing.note}
+                        onChange={(e) => setEditing({ ...editing, note: e.target.value })}
+                        onKeyDown={onEditKey}
+                        placeholder="Ghi chú (tuỳ chọn)"
+                        aria-label="Ghi chú"
+                        maxLength={300}
+                      />
+                    </div>
+                  ) : (
+                    <>
+                      <div className="doc-name">
+                        {d.filename} {d.is_base && <span className="base-tag">gốc</span>}
+                      </div>
+                      <div className="doc-meta">
+                        {busy ? 'Đang OCR, chia đoạn và nhúng vector…' : `${d.num_chunks} đoạn (chunks)`}
+                        {d.note ? ` · ${d.note}` : ''}
+                      </div>
+                      {d.status === 'error' && d.error && <div className="doc-error">{d.error}</div>}
+                    </>
+                  )}
                 </div>
-                <div className="doc-meta">
-                  {d.num_chunks} đoạn (chunks){d.note ? ` · ${d.note}` : ''}
+                <DocStatus doc={d} />
+                <div className="doc-actions">
+                  {isEditing ? (
+                    <>
+                      <button className="mini-btn primary" onClick={saveEdit} disabled={savingId === d.id}>
+                        {savingId === d.id ? 'Đang lưu…' : 'Lưu'}
+                      </button>
+                      <button className="mini-btn" onClick={() => setEditing(null)} disabled={savingId === d.id}>
+                        Huỷ
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {!d.is_base && (d.status === 'error' || d.status === 'pending') && (
+                        <button className="mini-btn" onClick={() => onReindex(d.id)}>Phân tích lại</button>
+                      )}
+                      <button className="mini-btn" onClick={() => onToggle(d.id)} disabled={busy}>
+                        {d.active ? 'Tắt' : 'Bật'}
+                      </button>
+                      <button className="mini-btn" onClick={() => startEdit(d)} disabled={busy}>
+                        Sửa tên
+                      </button>
+                      <button className="mini-btn danger" onClick={() => onDelete(d)} disabled={busy}>
+                        Xoá
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
-              <span className={`doc-status ${d.active ? 'on' : 'off'}`}>
-                {d.active ? 'Đang truy xuất' : 'Đã tạm dừng'}
-              </span>
-              <div className="doc-actions">
-                <button className="mini-btn" onClick={() => onToggle(d.id)}>
-                  {d.active ? 'Tắt' : 'Bật'}
-                </button>
-                {!d.is_base && (
-                  <button className="mini-btn danger" onClick={() => onDelete(d.id)}>
-                    Xoá
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -1397,6 +1518,8 @@ function ActionBadge({ action }) {
     register: { label: 'Đăng ký', cls: 'tag-register' },
     upload: { label: 'Namespace riêng', cls: 'tag-upload' },
     admin_upload: { label: 'Upload gốc', cls: 'tag-admin_upload' },
+    admin_rename: { label: 'Đổi tên tài liệu gốc', cls: 'tag-admin_upload' },
+    admin_delete: { label: 'Xoá tài liệu gốc', cls: 'tag-admin_upload' },
     role_change: { label: 'Phân quyền RBAC', cls: 'tag-login' },
   };
   const item = map[action] || { label: action, cls: 'tag-other' };

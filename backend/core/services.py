@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import logging
+import shutil
+import threading
+import time
 from pathlib import Path
-from typing import List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from llama_index.core.schema import Document as LIDocument
 
@@ -128,6 +131,128 @@ def delete_document_data(doc: Document) -> None:
             path.unlink()
     except Exception as e:
         logger.warning("Lỗi xoá file của tài liệu id=%s: %s", doc.id, e)
+
+
+# ---------------------------------------------------------------------------
+# Phân tích tài liệu chạy nền (Admin nạp tài liệu hệ thống)
+# ---------------------------------------------------------------------------
+# Trạng thái job theo doc_id (trong RAM): {"state": "processing"|"error", "error": str}.
+# Sau khi khởi động lại, tài liệu chưa index sẽ hiện "pending" và có thể phân tích lại.
+_jobs: Dict[int, dict] = {}
+_jobs_lock = threading.Lock()
+
+
+def mark_processing(doc_id: int) -> None:
+    with _jobs_lock:
+        _jobs[doc_id] = {"state": "processing", "error": ""}
+
+
+def is_processing(doc_id: int) -> bool:
+    with _jobs_lock:
+        return _jobs.get(doc_id, {}).get("state") == "processing"
+
+
+def forget_job(doc_id: int) -> None:
+    with _jobs_lock:
+        _jobs.pop(doc_id, None)
+
+
+def ingest_status(doc: Document) -> Tuple[str, str]:
+    """(status, lỗi) với status: processing | error | ready | pending."""
+    with _jobs_lock:
+        job = dict(_jobs.get(doc.id) or {})
+    if job.get("state") == "processing":
+        return "processing", ""
+    if job.get("state") == "error":
+        return "error", job.get("error", "")
+    if doc.indexed:
+        return "ready", ""
+    return "pending", ""
+
+
+def refresh_retrieval_cache() -> None:
+    """Build lại BM25 ngay sau khi index đổi, để câu hỏi kế tiếp không phải chờ."""
+    try:
+        from core.hybrid_retriever import get_retriever
+        get_retriever().ensure_bm25()
+    except Exception as e:
+        logger.warning("Không build lại được BM25 sau khi cập nhật index: %s", e)
+
+
+def run_ingest_job(doc_id: int, actor_id: Optional[int] = None, reindex: bool = False) -> None:
+    """
+    Job nền: đọc/OCR -> chunk -> embed -> chèn index -> build lại BM25.
+    Dùng session DB riêng vì chạy sau khi request đã trả về.
+    """
+    from core.db import SessionLocal  # import trễ để tránh vòng import
+    from core.models import ActivityLog
+
+    mark_processing(doc_id)
+    db = SessionLocal()
+    try:
+        doc = db.get(Document, doc_id)
+        if doc is None:
+            forget_job(doc_id)
+            return
+        t0 = time.perf_counter()
+        if reindex:
+            remove_document_from_index(doc)
+            doc.num_chunks = 0
+            doc.indexed = False
+            db.commit()
+        n = ingest_document(doc)
+        doc.num_chunks = n
+        doc.indexed = n > 0
+        db.commit()
+        if n == 0:
+            raise ValueError("Không trích xuất được nội dung (file rỗng, hoặc PDF dạng ảnh mà OCR/Tesseract chưa sẵn sàng).")
+        refresh_retrieval_cache()
+        db.add(ActivityLog(user_id=actor_id, action="admin_upload",
+                           detail=f"{doc.filename} ({n} chunk, {time.perf_counter() - t0:.1f}s)"))
+        db.commit()
+        forget_job(doc_id)
+        print(f"[Ingest] ✅ id={doc_id} {doc.filename}: {n} chunk ({time.perf_counter() - t0:.1f}s)")
+    except Exception as e:
+        db.rollback()
+        logger.exception("Phân tích tài liệu id=%s thất bại", doc_id)
+        with _jobs_lock:
+            _jobs[doc_id] = {"state": "error", "error": str(e)}
+        try:
+            doc = db.get(Document, doc_id)
+            if doc is not None:
+                doc.indexed = False
+                db.commit()
+        except Exception:
+            db.rollback()
+    finally:
+        db.close()
+
+
+def delete_base_block(doc: Document) -> List[str]:
+    """
+    Xoá khối tài liệu gốc: gỡ node không có doc_key khỏi index, chuyển file gốc trong
+    backend/data sang backend/data/removed/ (khôi phục được: chuyển file về rồi
+    rebuild index). Trả về tên các file đã chuyển.
+    """
+    from core.ingestion import DATA_DIR, list_base_files
+
+    try:
+        index_store.delete_nodes_by_doc_key(None)
+    except Exception as e:
+        logger.warning("Lỗi xoá node khối gốc khỏi index: %s", e)
+    removed_dir = DATA_DIR / "removed"
+    moved = []
+    for p in list_base_files():
+        removed_dir.mkdir(exist_ok=True)
+        target = removed_dir / p.name
+        if target.exists():
+            target = removed_dir / f"{p.stem}_{int(time.time())}{p.suffix}"
+        try:
+            shutil.move(str(p), str(target))
+            moved.append(p.name)
+        except Exception as e:
+            logger.warning("Không chuyển được file gốc %s: %s", p, e)
+    return moved
 
 
 def warn_if_index_inconsistent(db) -> List[str]:

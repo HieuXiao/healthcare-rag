@@ -54,6 +54,33 @@ def test_delete_removes_from_docstore_and_vector_store(vector_dir):
     assert len(reloaded.storage_context.docstore.docs) == 3
 
 
+def test_delete_base_block_with_none_key(vector_dir):
+    index = index_store.open_index_for_maintenance(vector_dir)
+    assert index_store.delete_nodes_by_doc_keys(index, [None]) == 2
+    index.storage_context.persist(persist_dir=str(vector_dir))
+    assert index_store.read_doc_key_counts(vector_dir) == {"doc:1": 1, "doc:99": 1}
+
+
+def test_rename_updates_file_name_in_docstore(vector_dir):
+    index = index_store.open_index_for_maintenance(vector_dir)
+    assert index_store.set_file_name_by_doc_key(index, "doc:1", "Phác đồ mới.pdf") == 1
+    assert index_store.set_file_name_by_doc_key(index, None, "co-xuong-khop.pdf") == 2
+    # Đổi lại cùng tên -> không có node nào thay đổi.
+    assert index_store.set_file_name_by_doc_key(index, None, "co-xuong-khop.pdf") == 0
+    index.storage_context.persist(persist_dir=str(vector_dir))
+
+    reloaded = index_store.open_index_for_maintenance(vector_dir)
+    names = {(n.metadata.get("doc_key"), n.metadata.get("file_name"))
+             for n in reloaded.storage_context.docstore.docs.values()}
+    assert ("doc:1", "Phác đồ mới.pdf") in names
+    assert (None, "co-xuong-khop.pdf") in names
+    assert (None, "base.pdf") not in names
+    # Không đụng tới tài liệu khác và không mất embedding.
+    assert index_store.read_doc_key_counts(vector_dir) == {None: 2, "doc:1": 1, "doc:99": 1}
+    vs = json.loads((vector_dir / "default__vector_store.json").read_text(encoding="utf-8"))
+    assert len(vs["embedding_dict"]) == 4
+
+
 def test_delete_unknown_key_is_noop(vector_dir):
     index = index_store.open_index_for_maintenance(vector_dir)
     assert index_store.delete_nodes_by_doc_keys(index, ["doc:404"]) == 0

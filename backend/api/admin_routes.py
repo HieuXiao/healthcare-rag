@@ -22,12 +22,12 @@ import time
 from datetime import date
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from api import usage
-from core import auth, deidentify, graph_seed, services
+from core import auth, deidentify, graph_seed, index_store, ingestion, services
 from core.db import BASE_INDEX_MARKER, UPLOAD_DIR, get_db, to_stored_path
 from core.models import ActivityLog, Conversation, Document, User
 
@@ -98,12 +98,26 @@ def _sanitize_auth_detail(action: str, raw_detail: str | None) -> str:
 
 
 def _doc_out(d: Document):
+    status, error = services.ingest_status(d)
     return {
         "id": d.id, "scope": d.scope, "filename": d.filename,
         "num_chunks": d.num_chunks, "active": d.active, "indexed": d.indexed,
         "note": d.note or "", "is_base": d.stored_path == BASE_INDEX_MARKER,
+        "status": status, "error": error,
         "created_at": d.created_at.isoformat() if d.created_at else "",
     }
+
+
+def _get_system_doc(db: Session, doc_id: int) -> Document:
+    doc = db.query(Document).filter(Document.id == doc_id, Document.scope == "system").first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
+    return doc
+
+
+def _ensure_not_processing(doc: Document) -> None:
+    if services.is_processing(doc.id):
+        raise HTTPException(status_code=409, detail="Tài liệu đang được phân tích, vui lòng thử lại sau.")
 
 
 # ---- System documents (Chiến lược 3: Data Isolation - Chỉ quản lý file chung) ----
@@ -115,8 +129,12 @@ def list_system_docs(admin: User = Depends(auth.require_admin), db: Session = De
 
 
 @router.post("/documents/upload")
-def upload_system_doc(file: UploadFile = File(...), note: str = Form(""),
+def upload_system_doc(background: BackgroundTasks, file: UploadFile = File(...), note: str = Form(""),
                       admin: User = Depends(auth.require_admin), db: Session = Depends(get_db)):
+    """
+    Lưu file rồi trả về ngay; việc phân tích (OCR -> chunk -> embed -> chèn index ->
+    build lại BM25) chạy nền. UI theo dõi qua trường `status` của GET /admin/documents.
+    """
     ext = Path(file.filename or "").suffix.lower()
     if ext not in ALLOWED_EXT:
         raise HTTPException(status_code=400, detail=f"Chỉ hỗ trợ: {', '.join(sorted(ALLOWED_EXT))}")
@@ -127,30 +145,74 @@ def upload_system_doc(file: UploadFile = File(...), note: str = Form(""),
     path.write_bytes(data)
 
     doc = Document(scope="system", owner_id=None, uploaded_by=admin.id,
-                   filename=file.filename, stored_path=to_stored_path(path), note=note, active=True)
+                   filename=Path(file.filename).name, stored_path=to_stored_path(path),
+                   note=note.strip()[:300], active=True, indexed=False, num_chunks=0)
     db.add(doc)
     db.commit()
     db.refresh(doc)
-    try:
-        n = services.ingest_document(doc)
-        doc.num_chunks = n
-        doc.indexed = n > 0
-        db.commit()
-    except Exception as e:
-        doc.indexed = False
-        db.commit()
-        raise HTTPException(status_code=500, detail=f"Lỗi xử lý tài liệu: {e}")
 
-    db.add(ActivityLog(user_id=admin.id, action="admin_upload", detail=f"{file.filename} ({doc.num_chunks} chunk)"))
+    services.mark_processing(doc.id)
+    background.add_task(services.run_ingest_job, doc.id, admin.id)
+    return _doc_out(doc)
+
+
+@router.post("/documents/{doc_id}/reindex")
+def reindex_system_doc(doc_id: int, background: BackgroundTasks,
+                       admin: User = Depends(auth.require_admin), db: Session = Depends(get_db)):
+    """Phân tích lại 1 tài liệu upload (vd. lần trước lỗi OCR hoặc server tắt giữa chừng)."""
+    doc = _get_system_doc(db, doc_id)
+    _ensure_not_processing(doc)
+    if doc.stored_path == BASE_INDEX_MARKER:
+        raise HTTPException(status_code=400, detail="Khối gốc được build lại bằng: "
+                            "cd backend && python scripts/rebuild_index.py --from-scratch")
+    services.mark_processing(doc.id)
+    background.add_task(services.run_ingest_job, doc.id, admin.id, True)
+    return _doc_out(doc)
+
+
+@router.put("/documents/{doc_id}")
+def update_system_doc(doc_id: int, payload: dict,
+                      admin: User = Depends(auth.require_admin), db: Session = Depends(get_db)):
+    """Đổi tên hiển thị / ghi chú. Tên mới cũng được cập nhật vào nguồn trích dẫn trong index."""
+    doc = _get_system_doc(db, doc_id)
+    _ensure_not_processing(doc)
+    is_base = doc.stored_path == BASE_INDEX_MARKER
+
+    if "filename" in payload:
+        name = str(payload.get("filename") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Tên tài liệu không được để trống.")
+        if len(name) > 300:
+            raise HTTPException(status_code=400, detail="Tên tài liệu tối đa 300 ký tự.")
+        if not is_base:
+            # Giữ đuôi file gốc nếu Admin gõ tên không có đuôi.
+            ext = Path(doc.filename).suffix
+            if ext and Path(name).suffix.lower() not in ALLOWED_EXT:
+                name += ext
+        if name != doc.filename:
+            try:
+                if not is_base:
+                    index_store.rename_doc_nodes(doc.retrieval_key, name)
+                elif len(ingestion.list_base_files()) == 1:
+                    # Khối gốc 1 file: đổi luôn nguồn trích dẫn. Nhiều file thì chỉ đổi tên hiển thị.
+                    index_store.rename_doc_nodes(None, name)
+            except FileNotFoundError:
+                pass  # chưa có Vector DB: chỉ đổi tên trong DB
+            old = doc.filename
+            doc.filename = name
+            db.add(ActivityLog(user_id=admin.id, action="admin_rename", detail=f"{old} → {name}"))
+            services.refresh_retrieval_cache()
+
+    if "note" in payload:
+        doc.note = str(payload.get("note") or "").strip()[:300]
+
     db.commit()
     return _doc_out(doc)
 
 
 @router.put("/documents/{doc_id}/toggle")
 def toggle_system_doc(doc_id: int, admin: User = Depends(auth.require_admin), db: Session = Depends(get_db)):
-    doc = db.query(Document).filter(Document.id == doc_id, Document.scope == "system").first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
+    doc = _get_system_doc(db, doc_id)
     doc.active = not doc.active
     db.commit()
     return _doc_out(doc)
@@ -158,14 +220,20 @@ def toggle_system_doc(doc_id: int, admin: User = Depends(auth.require_admin), db
 
 @router.delete("/documents/{doc_id}")
 def delete_system_doc(doc_id: int, admin: User = Depends(auth.require_admin), db: Session = Depends(get_db)):
-    doc = db.query(Document).filter(Document.id == doc_id, Document.scope == "system").first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
+    doc = _get_system_doc(db, doc_id)
+    _ensure_not_processing(doc)
+    detail = doc.filename
     if doc.stored_path == BASE_INDEX_MARKER:
-        raise HTTPException(status_code=400, detail="Không thể xoá khối tài liệu gốc (chỉ có thể bật/tắt).")
-    services.delete_document_data(doc)
+        moved = services.delete_base_block(doc)
+        if moved:
+            detail += f" (file gốc chuyển sang backend/data/removed/: {', '.join(moved)})"
+    else:
+        services.delete_document_data(doc)
+    services.forget_job(doc.id)
     db.delete(doc)
+    db.add(ActivityLog(user_id=admin.id, action="admin_delete", detail=detail))
     db.commit()
+    services.refresh_retrieval_cache()
     return {"ok": True}
 
 

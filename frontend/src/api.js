@@ -98,6 +98,12 @@ export const api = {
   adminDeleteDocument: (id) => fetch(`${API_BASE_URL}/api/admin/documents/${id}`, {
     method: 'DELETE', headers: authHeaders(),
   }).then(handle),
+  adminUpdateDocument: (id, body) => fetch(`${API_BASE_URL}/api/admin/documents/${id}`, {
+    method: 'PUT', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body),
+  }).then(handle),
+  adminReindexDocument: (id) => fetch(`${API_BASE_URL}/api/admin/documents/${id}/reindex`, {
+    method: 'POST', headers: authHeaders(),
+  }).then(handle),
   adminUsers: () => fetch(`${API_BASE_URL}/api/admin/users`, { headers: authHeaders() }).then(handle),
   adminUpdateUserRole: (id, role) => fetch(`${API_BASE_URL}/api/admin/users/${id}/role`, {
     method: 'PUT', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ role }),

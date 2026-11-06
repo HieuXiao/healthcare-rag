@@ -154,10 +154,10 @@ export default function ChatView({ conversationId, selectedModel, onConversation
 
 function EmptyState({ onPick }) {
   const samples = [
-    'Phác đồ điều trị đái tháo đường týp 2 dùng thuốc gì đầu tiên?',
-    'Metformin có chống chỉ định khi suy thận không?',
-    'Metformin có tương tác với rượu bia không?',
-    'Mục tiêu HbA1c trong điều trị đái tháo đường là bao nhiêu?',
+    'Tiêu chuẩn chẩn đoán viêm khớp dạng thấp là gì?',
+    'Điều trị cơn gút cấp như thế nào?',
+    'Phác đồ điều trị thoái hóa khớp gối theo Bộ Y tế?',
+    'Chỉ định điều trị loãng xương khi nào?',
   ];
   return (
     <div className="empty-state">

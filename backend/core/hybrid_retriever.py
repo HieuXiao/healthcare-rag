@@ -73,6 +73,10 @@ class HybridRetriever:
             self._bm25_gen = gen
             print(f"[Hybrid] BM25 index (re)build với {len(corpus)} chunk.")
 
+    def ensure_bm25(self):
+        """Build (lại) BM25 nếu tập node đã đổi — gọi ngay sau khi nạp/xoá/đổi tên tài liệu."""
+        self._ensure_bm25()
+
     def _bm25_search(self, query: str, top_k: int) -> List:
         self._ensure_bm25()
         if not self._bm25:

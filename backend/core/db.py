@@ -94,20 +94,73 @@ def init_db():
             db.commit()
             print(f"[DB] Seed admin: {admin_email} (mật khẩu mặc định: admin123 — hãy đổi)")
 
-        # Seed tài liệu hệ thống gốc (khối Vector DB có sẵn: phác đồ ĐTĐ).
-        if not db.query(Document).filter(Document.stored_path == BASE_INDEX_MARKER).first():
-            base_doc = Document(
-                scope="system",
-                owner_id=None,
-                filename="phac-do-dai-thao-duong.pdf",
-                stored_path=BASE_INDEX_MARKER,
-                num_chunks=48,
-                active=True,
-                indexed=True,
-                note="Phác đồ Đái tháo đường típ 2 (Bộ Y tế) — tài liệu gốc hệ thống",
-            )
-            db.add(base_doc)
-            db.commit()
-            print("[DB] Seed tài liệu hệ thống gốc: phac-do-dai-thao-duong.pdf")
+        sync_base_document(db)
     finally:
         db.close()
+
+
+# Giá trị seed cũ (bản đầu hard-code phác đồ ĐTĐ) — dùng để nhận ra bản ghi chưa được đồng bộ.
+LEGACY_BASE_FILENAME = "phac-do-dai-thao-duong.pdf"
+LEGACY_BASE_NOTE = "Phác đồ Đái tháo đường típ 2 (Bộ Y tế) — tài liệu gốc hệ thống"
+BASE_NOTE = "Khối tài liệu gốc hệ thống (backend/data)"
+
+
+def base_display_name(files) -> str:
+    """Tên hiển thị của khối gốc = tên các file *.pdf/*.txt đang nằm trong backend/data."""
+    return ", ".join(Path(p).name for p in files)
+
+
+def _base_chunk_count() -> Optional[int]:
+    """Số node không có doc_key (khối gốc) trong Vector DB, None nếu chưa build index."""
+    from core import index_store  # import trễ: tránh nạp llama_index khi không cần
+
+    vector_dir = index_store.find_vector_store_dir()
+    if vector_dir is None:
+        return None
+    try:
+        return index_store.read_doc_key_counts(vector_dir).get(None, 0)
+    except Exception:
+        return None
+
+
+def sync_base_document(db) -> None:
+    """
+    Bản ghi `documents` của khối gốc phải phản ánh file thật trong backend/data:
+      - Chưa có bản ghi + có file gốc -> seed theo tên file thật.
+      - Bản ghi còn mang tên seed cũ (phác đồ ĐTĐ) mà file đó không còn -> đổi theo file thật.
+    Tên do Admin tự đặt (khác tên seed cũ) được giữ nguyên.
+    """
+    from core.ingestion import list_base_files  # import trễ (module có OCR reader)
+
+    files = list_base_files()
+    names = {p.name for p in files}
+    row = db.query(Document).filter(Document.stored_path == BASE_INDEX_MARKER).first()
+
+    if row is None:
+        if not files:
+            return  # không có tài liệu gốc (hoặc Admin đã xoá khối gốc)
+        n = _base_chunk_count()
+        db.add(Document(
+            scope="system", owner_id=None, filename=base_display_name(files),
+            stored_path=BASE_INDEX_MARKER, num_chunks=n or 0, active=True,
+            indexed=bool(n), note=BASE_NOTE,
+        ))
+        db.commit()
+        print(f"[DB] Seed khối tài liệu gốc: {base_display_name(files)}")
+        return
+
+    changed = False
+    if row.filename == LEGACY_BASE_FILENAME and LEGACY_BASE_FILENAME not in names and files:
+        row.filename = base_display_name(files)
+        changed = True
+    if row.note == LEGACY_BASE_NOTE:
+        row.note = BASE_NOTE
+        changed = True
+    n = _base_chunk_count()
+    if n is not None and row.num_chunks != n:
+        row.num_chunks = n
+        row.indexed = n > 0
+        changed = True
+    if changed:
+        db.commit()
+        print(f"[DB] Đồng bộ khối tài liệu gốc: {row.filename} ({row.num_chunks} chunk)")
