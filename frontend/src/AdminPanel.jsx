@@ -1721,7 +1721,7 @@ function SystemDocs() {
         <div>
           <h3>🏛️ Quản lý Tài liệu gốc Hệ thống (Data Steward — Knowledge Base chung)</h3>
           <p className="panel-sub">
-            Phân vùng không gian dữ liệu (Data Isolation): Admin chỉ quản lý tài liệu y văn dùng chung toàn viện. Tài liệu riêng của User trong Save box được lưu ở Namespace riêng và chặn truy cập từ phía Backend.
+            Phân vùng không gian dữ liệu (Data Isolation): Admin chỉ quản lý tài liệu y văn dùng chung toàn viện. Tài liệu riêng của User (mục Lưu trữ) được lưu ở Namespace riêng và chặn truy cập từ phía Backend.
           </p>
         </div>
       </div>

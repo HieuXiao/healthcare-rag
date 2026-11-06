@@ -1,4 +1,5 @@
 import { useAuth } from './auth.jsx';
+import { NAV_LABELS } from './shortcuts.js';
 
 const ICONS = {
   brand: (
@@ -97,11 +98,11 @@ const ICONS = {
 };
 
 const ADMIN_NAV_ITEMS = [
-  { id: 'dashboard', keyId: 'admin:dashboard', label: 'Tổng quan & Biểu đồ', icon: ICONS.dashboard },
-  { id: 'chats', keyId: 'admin:chats', label: 'Truy vấn & Bám nguồn', icon: ICONS.factCheck },
-  { id: 'auth-logs', keyId: 'admin:auth-logs', label: 'Xác thực & Kiểm toán', icon: ICONS.security },
-  { id: 'docs', keyId: 'admin:docs', label: 'Tài liệu gốc hệ thống', icon: ICONS.docs },
-  { id: 'users', keyId: 'admin:users', label: 'Người dùng & RBAC', icon: ICONS.users },
+  { id: 'dashboard', keyId: 'admin:dashboard', label: NAV_LABELS['admin:dashboard'], icon: ICONS.dashboard },
+  { id: 'chats', keyId: 'admin:chats', label: NAV_LABELS['admin:chats'], icon: ICONS.factCheck },
+  { id: 'auth-logs', keyId: 'admin:auth-logs', label: NAV_LABELS['admin:auth-logs'], icon: ICONS.security },
+  { id: 'docs', keyId: 'admin:docs', label: NAV_LABELS['admin:docs'], icon: ICONS.docs },
+  { id: 'users', keyId: 'admin:users', label: NAV_LABELS['admin:users'], icon: ICONS.users },
 ];
 
 export default function Sidebar({
@@ -155,7 +156,7 @@ export default function Sidebar({
         {/* Nhóm 1: Quản trị Hệ thống (dành cho Admin) */}
         {isAdmin && (
           <div className="nav-group">
-            {!collapsed && <div className="nav-group-label">Quản trị hệ thống</div>}
+            {!collapsed && <div className="nav-group-label">Quản trị</div>}
             <div className="nav-list">
               {ADMIN_NAV_ITEMS.map((item) => (
                 <NavItem
@@ -172,13 +173,13 @@ export default function Sidebar({
           </div>
         )}
 
-        {/* Nhóm 2: Lâm sàng & Cá nhân */}
+        {/* Nhóm 2: Cá nhân */}
         <div className="nav-group">
-          {!collapsed && <div className="nav-group-label">Lâm sàng & Cá nhân</div>}
+          {!collapsed && <div className="nav-group-label">Cá nhân</div>}
           <div className="nav-list">
             <NavItem
               icon={ICONS.chat}
-              label="Phòng khám (Chat)"
+              label={NAV_LABELS['view:chat']}
               shortcut={shortcuts['view:chat']}
               active={view === 'chat'}
               collapsed={collapsed}
@@ -201,7 +202,7 @@ export default function Sidebar({
               }
             />
 
-            {/* Lịch sử hội thoại gọn gàng ngay dưới mục Phòng khám khi đang ở Chat */}
+            {/* Lịch sử hội thoại gọn gàng ngay dưới mục Trò chuyện khi đang ở Chat */}
             {!collapsed && view === 'chat' && (
               <div className="conv-sublist">
                 <button className="conv-new-inline" onClick={onNewChat}>
@@ -238,7 +239,7 @@ export default function Sidebar({
 
             <NavItem
               icon={ICONS.folder}
-              label="Save box của tôi"
+              label={NAV_LABELS['view:savebox']}
               shortcut={shortcuts['view:savebox']}
               active={view === 'savebox'}
               collapsed={collapsed}
@@ -246,7 +247,7 @@ export default function Sidebar({
             />
             <NavItem
               icon={ICONS.user}
-              label="Hồ sơ cá nhân"
+              label={NAV_LABELS['view:profile']}
               shortcut={shortcuts['view:profile']}
               active={view === 'profile'}
               collapsed={collapsed}
@@ -254,7 +255,7 @@ export default function Sidebar({
             />
             <NavItem
               icon={ICONS.settings}
-              label="Cài đặt hệ thống"
+              label={NAV_LABELS['view:settings']}
               shortcut={shortcuts['view:settings']}
               active={view === 'settings'}
               collapsed={collapsed}

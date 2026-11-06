@@ -1,19 +1,24 @@
 // Quản lý phím tắt điều hướng Sidebar (Mặc định F1 -> Fn từ trên xuống)
 
 export const ADMIN_TABS_META = [
-  { keyId: 'admin:dashboard', view: 'admin', adminTab: 'dashboard', label: 'Tổng quan & Biểu đồ', group: 'Quản trị hệ thống' },
-  { keyId: 'admin:chats', view: 'admin', adminTab: 'chats', label: 'Truy vấn & Bám nguồn', group: 'Quản trị hệ thống' },
-  { keyId: 'admin:auth-logs', view: 'admin', adminTab: 'auth-logs', label: 'Xác thực & Kiểm toán', group: 'Quản trị hệ thống' },
-  { keyId: 'admin:docs', view: 'admin', adminTab: 'docs', label: 'Tài liệu gốc hệ thống', group: 'Quản trị hệ thống' },
-  { keyId: 'admin:users', view: 'admin', adminTab: 'users', label: 'Người dùng & RBAC', group: 'Quản trị hệ thống' },
+  { keyId: 'admin:dashboard', view: 'admin', adminTab: 'dashboard', label: 'Tổng quan', group: 'Quản trị' },
+  { keyId: 'admin:chats', view: 'admin', adminTab: 'chats', label: 'Truy vấn', group: 'Quản trị' },
+  { keyId: 'admin:auth-logs', view: 'admin', adminTab: 'auth-logs', label: 'Bảo mật', group: 'Quản trị' },
+  { keyId: 'admin:docs', view: 'admin', adminTab: 'docs', label: 'Tài liệu', group: 'Quản trị' },
+  { keyId: 'admin:users', view: 'admin', adminTab: 'users', label: 'Người dùng', group: 'Quản trị' },
 ];
 
 export const PERSONAL_TABS_META = [
-  { keyId: 'view:chat', view: 'chat', label: 'Phòng khám (Chat)', group: 'Lâm sàng & Cá nhân' },
-  { keyId: 'view:savebox', view: 'savebox', label: 'Save box của tôi', group: 'Lâm sàng & Cá nhân' },
-  { keyId: 'view:profile', view: 'profile', label: 'Hồ sơ cá nhân', group: 'Lâm sàng & Cá nhân' },
-  { keyId: 'view:settings', view: 'settings', label: 'Cài đặt hệ thống', group: 'Lâm sàng & Cá nhân' },
+  { keyId: 'view:chat', view: 'chat', label: 'Trò chuyện', group: 'Cá nhân' },
+  { keyId: 'view:savebox', view: 'savebox', label: 'Lưu trữ', group: 'Cá nhân' },
+  { keyId: 'view:profile', view: 'profile', label: 'Hồ sơ', group: 'Cá nhân' },
+  { keyId: 'view:settings', view: 'settings', label: 'Cài đặt', group: 'Cá nhân' },
 ];
+
+// Nhãn điều hướng dùng chung cho Sidebar, header và trang Cài đặt
+export const NAV_LABELS = Object.fromEntries(
+  [...ADMIN_TABS_META, ...PERSONAL_TABS_META].map((t) => [t.keyId, t.label])
+);
 
 export function getOrderedTabsForRole(role) {
   if (role === 'admin') {

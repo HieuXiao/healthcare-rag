@@ -11,24 +11,25 @@ import {
   eventToShortcutString,
   getOrderedTabsForRole,
   loadShortcuts,
+  NAV_LABELS,
 } from './shortcuts.js';
 
 const FALLBACK_MODELS = ['gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-flash-latest', 'gemini-flash-lite-latest'];
 
 const VIEW_TITLES = {
-  chat: 'Phòng khám (Chat) — Trợ lý Y tế RAG lâm sàng',
-  savebox: 'Save box — Tài liệu y khoa cá nhân',
-  admin: 'Quản trị hệ thống',
-  profile: 'Hồ sơ cá nhân',
-  settings: 'Cài đặt hệ thống — Phím tắt & Tuỳ chỉnh',
+  chat: NAV_LABELS['view:chat'],
+  savebox: NAV_LABELS['view:savebox'],
+  admin: 'Quản trị',
+  profile: NAV_LABELS['view:profile'],
+  settings: NAV_LABELS['view:settings'],
 };
 
 const ADMIN_TITLES = {
-  dashboard: 'Quản trị hệ thống — Tổng quan & Biểu đồ y khoa',
-  chats: 'Quản trị hệ thống — Nhật ký Truy vấn (PII Redacted) & Đánh giá RAG',
-  'auth-logs': 'Quản trị hệ thống — Xác thực & Kiểm toán Bảo mật',
-  docs: 'Quản trị hệ thống — Tài liệu gốc hệ thống (Data Isolation)',
-  users: 'Quản trị hệ thống — Người dùng & Phân quyền RBAC',
+  dashboard: NAV_LABELS['admin:dashboard'],
+  chats: NAV_LABELS['admin:chats'],
+  'auth-logs': NAV_LABELS['admin:auth-logs'],
+  docs: NAV_LABELS['admin:docs'],
+  users: NAV_LABELS['admin:users'],
 };
 
 function parseHash(userRole) {
@@ -200,7 +201,7 @@ export default function Workspace({ theme, toggleTheme }) {
   };
 
   const isCurrentAdmin = view === 'admin' && user?.role === 'admin';
-  const currentTitle = isCurrentAdmin ? (ADMIN_TITLES[adminTab] || 'Quản trị hệ thống') : VIEW_TITLES[view];
+  const currentTitle = isCurrentAdmin ? (ADMIN_TITLES[adminTab] || 'Quản trị') : VIEW_TITLES[view];
 
   return (
     <div className="workspace">
@@ -244,10 +245,10 @@ export default function Workspace({ theme, toggleTheme }) {
               </button>
               {userMenu && (
                 <div className="user-dropdown" onMouseLeave={() => setUserMenu(false)}>
-                  <button onClick={() => { handleNavigate('profile'); setUserMenu(false); }}>👤 Hồ sơ cá nhân</button>
-                  <button onClick={() => { handleNavigate('settings'); setUserMenu(false); }}>⚙️ Cài đặt phím tắt</button>
-                  <button onClick={() => { handleNavigate('savebox'); setUserMenu(false); }}>📁 Save box của tôi</button>
-                  {user.role === 'admin' && <button onClick={() => { handleNavigate('admin'); setUserMenu(false); }}>🛡️ Quản trị hệ thống</button>}
+                  <button onClick={() => { handleNavigate('profile'); setUserMenu(false); }}>👤 {NAV_LABELS['view:profile']}</button>
+                  <button onClick={() => { handleNavigate('settings'); setUserMenu(false); }}>⚙️ {NAV_LABELS['view:settings']}</button>
+                  <button onClick={() => { handleNavigate('savebox'); setUserMenu(false); }}>📁 {NAV_LABELS['view:savebox']}</button>
+                  {user.role === 'admin' && <button onClick={() => { handleNavigate('admin'); setUserMenu(false); }}>🛡️ Quản trị</button>}
                   <div className="dropdown-sep" />
                   <button className="danger" onClick={logout}>🚪 Đăng xuất</button>
                 </div>

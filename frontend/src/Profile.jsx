@@ -55,7 +55,7 @@ export default function Profile() {
   const handleDeleteAccount = async () => {
     if (!window.confirm(
       '⚠️ XÁC NHẬN XOÁ VĨNH VIỄN TÀI KHOẢN (GDPR Art. 17):\n\n' +
-      'Toàn bộ hồ sơ cá nhân, lịch sử hội thoại và tài liệu trong Save box của bạn sẽ bị xoá vĩnh viễn khỏi hệ thống và Vector DB. Bạn có chắc chắn muốn tiếp tục?'
+      'Toàn bộ hồ sơ cá nhân, lịch sử hội thoại và tài liệu trong mục Lưu trữ sẽ bị xoá vĩnh viễn khỏi hệ thống và Vector DB. Bạn có chắc chắn muốn tiếp tục?'
     )) return;
     setBusy(true);
     setError('');
@@ -109,7 +109,7 @@ export default function Profile() {
           <div>
             <h3>🛡️ Quyền Riêng tư &amp; Kiểm soát Dữ liệu Cá nhân (GDPR / NĐ 13/2023)</h3>
             <p className="panel-sub">
-              Dữ liệu hội thoại và tài liệu trong Save box của bạn được cô lập hoàn toàn; ngay cả Quản trị viên hệ thống cũng không có quyền đọc nội dung. Bạn toàn quyền trích xuất hoặc xoá vĩnh viễn dữ liệu của mình.
+              Dữ liệu hội thoại và tài liệu trong mục Lưu trữ được cô lập hoàn toàn; ngay cả Quản trị viên hệ thống cũng không có quyền đọc nội dung. Bạn toàn quyền trích xuất hoặc xoá vĩnh viễn dữ liệu của mình.
             </p>
           </div>
         </div>
