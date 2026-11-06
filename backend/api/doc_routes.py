@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from core import auth, services
-from core.db import UPLOAD_DIR, get_db
+from core.db import UPLOAD_DIR, get_db, to_stored_path
 from core.models import ActivityLog, Document, User
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -57,7 +57,7 @@ def upload_document(file: UploadFile = File(...), note: str = Form(""),
                     user: User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
     path = _save_upload(file, user.id)
     doc = Document(scope="user", owner_id=user.id, uploaded_by=user.id,
-                   filename=file.filename, stored_path=str(path), note=note, active=True)
+                   filename=file.filename, stored_path=to_stored_path(path), note=note, active=True)
     db.add(doc)
     db.commit()
     db.refresh(doc)
@@ -92,13 +92,7 @@ def delete_document(doc_id: int, user: User = Depends(auth.get_current_user), db
     doc = db.query(Document).filter(Document.id == doc_id, Document.owner_id == user.id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
-    try:
-        services.remove_document_from_index(doc)
-        p = Path(doc.stored_path)
-        if p.exists():
-            p.unlink()
-    except Exception as e:
-        print(f"[documents] Lỗi xoá index/file: {e}")
+    services.delete_document_data(doc)
     db.delete(doc)
     db.commit()
     return {"ok": True}

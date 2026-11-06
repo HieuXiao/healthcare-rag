@@ -1,5 +1,8 @@
 import pytesseract
-import fitz  # PyMuPDF
+try:
+    import pymupdf as fitz
+except ImportError:
+    import fitz  # PyMuPDF fallback
 from PIL import Image
 from pdf2image import convert_from_path
 from llama_index.core.readers.base import BaseReader

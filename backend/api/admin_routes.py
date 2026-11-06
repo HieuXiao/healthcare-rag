@@ -11,7 +11,7 @@ from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from core import auth, graph_seed, services
-from core.db import BASE_INDEX_MARKER, UPLOAD_DIR, get_db
+from core.db import BASE_INDEX_MARKER, UPLOAD_DIR, get_db, to_stored_path
 from core.models import ActivityLog, Conversation, Document, Message, User
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -50,7 +50,7 @@ def upload_system_doc(file: UploadFile = File(...), note: str = Form(""),
     path.write_bytes(data)
 
     doc = Document(scope="system", owner_id=None, uploaded_by=admin.id,
-                   filename=file.filename, stored_path=str(path), note=note, active=True)
+                   filename=file.filename, stored_path=to_stored_path(path), note=note, active=True)
     db.add(doc)
     db.commit()
     db.refresh(doc)
@@ -86,13 +86,7 @@ def delete_system_doc(doc_id: int, admin: User = Depends(auth.require_admin), db
         raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
     if doc.stored_path == BASE_INDEX_MARKER:
         raise HTTPException(status_code=400, detail="Không thể xoá khối tài liệu gốc (chỉ có thể bật/tắt).")
-    try:
-        services.remove_document_from_index(doc)
-        p = Path(doc.stored_path)
-        if p.exists():
-            p.unlink()
-    except Exception as e:
-        print(f"[admin] Lỗi xoá index/file: {e}")
+    services.delete_document_data(doc)
     db.delete(doc)
     db.commit()
     return {"ok": True}

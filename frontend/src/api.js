@@ -1,5 +1,7 @@
 // API client tập trung cho web app RAG.
-const rawBase = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8001';
+// Mặc định rỗng = gọi cùng origin (/api/...): dev đi qua proxy của Vite, Docker đi qua nginx.
+// Chỉ set VITE_API_BASE_URL khi backend nằm ở domain khác.
+const rawBase = import.meta.env.VITE_API_BASE_URL ?? '';
 export const API_BASE_URL = rawBase.replace('0.0.0.0', '127.0.0.1');
 
 const TOKEN_KEY = 'medrag-token';

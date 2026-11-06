@@ -2,25 +2,31 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from './api.js';
 import { useAuth } from './auth.jsx';
 import Sidebar from './Sidebar.jsx';
-import AdminSidebar from './AdminSidebar.jsx';
 import ChatView from './ChatView.jsx';
 import SaveBox from './SaveBox.jsx';
 import AdminPanel from './AdminPanel.jsx';
 import Profile from './Profile.jsx';
+import Settings from './Settings.jsx';
+import {
+  eventToShortcutString,
+  getOrderedTabsForRole,
+  loadShortcuts,
+} from './shortcuts.js';
 
 const FALLBACK_MODELS = ['gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-flash-latest', 'gemini-flash-lite-latest'];
 
 const VIEW_TITLES = {
-  chat: 'Trò chuyện lâm sàng',
-  savebox: 'Save box — Tài liệu của tôi',
+  chat: 'Phòng khám (Chat) — Trợ lý Y tế RAG lâm sàng',
+  savebox: 'Save box — Tài liệu y khoa cá nhân',
   admin: 'Quản trị hệ thống',
   profile: 'Hồ sơ cá nhân',
+  settings: 'Cài đặt hệ thống — Phím tắt & Tuỳ chỉnh',
 };
 
 const ADMIN_TITLES = {
   dashboard: 'Quản trị hệ thống — Tổng quan & Biểu đồ y khoa',
-  chats: 'Quản trị hệ thống — Nhật ký Truy vấn & Bám nguồn',
-  'auth-logs': 'Quản trị hệ thống — Lịch sử Xác thực & Bảo mật',
+  chats: 'Quản trị hệ thống — Truy vấn & Bám nguồn (Med-FactCheck)',
+  'auth-logs': 'Quản trị hệ thống — Xác thực & Bảo mật',
   docs: 'Quản trị hệ thống — Tài liệu gốc hệ thống',
   users: 'Quản trị hệ thống — Quản lý người dùng',
 };
@@ -32,10 +38,10 @@ function parseHash(userRole) {
     const parts = raw.split('/');
     const mainView = parts[0];
     const subTab = parts[1];
-    const validViews = ['chat', 'savebox', 'profile', 'admin'];
+    const validViews = ['chat', 'savebox', 'profile', 'settings', 'admin'];
     if (validViews.includes(mainView)) {
       if (mainView === 'admin' && userRole !== 'admin') {
-        return { view: 'chat', adminTab: 'dashboard' };
+        return { view: userRole === 'admin' ? 'admin' : 'chat', adminTab: 'dashboard' };
       }
       const validAdminTabs = ['dashboard', 'chats', 'auth-logs', 'docs', 'users'];
       const resolvedAdminTab = validAdminTabs.includes(subTab) ? subTab : 'dashboard';
@@ -46,24 +52,22 @@ function parseHash(userRole) {
 }
 
 function getInitialViewState(userRole) {
-  // 1. Ưu tiên URL Hash (khi F5 hoặc mở link trực tiếp)
   const fromHash = parseHash(userRole);
   if (fromHash) return fromHash;
 
-  // 2. Fallback sang localStorage
   try {
     const savedView = localStorage.getItem('medrag-active-view');
     const savedTab = localStorage.getItem('medrag-admin-tab') || 'dashboard';
-    const validViews = ['chat', 'savebox', 'profile', 'admin'];
+    const validViews = ['chat', 'savebox', 'profile', 'settings', 'admin'];
     if (savedView && validViews.includes(savedView)) {
       if (savedView === 'admin' && userRole !== 'admin') {
-        return { view: 'chat', adminTab: 'dashboard' };
+        return { view: userRole === 'admin' ? 'admin' : 'chat', adminTab: 'dashboard' };
       }
       return { view: savedView, adminTab: savedTab };
     }
   } catch { /* ignore */ }
 
-  return { view: 'chat', adminTab: 'dashboard' };
+  return { view: userRole === 'admin' ? 'admin' : 'chat', adminTab: 'dashboard' };
 }
 
 export default function Workspace({ theme, toggleTheme }) {
@@ -77,8 +81,8 @@ export default function Workspace({ theme, toggleTheme }) {
   const [modelStats, setModelStats] = useState([]);
   const [selectedModel, setSelectedModel] = useState(FALLBACK_MODELS[0]);
   const [userMenu, setUserMenu] = useState(false);
+  const [shortcuts, setShortcuts] = useState(() => loadShortcuts(user?.role));
 
-  // Cập nhật view và lưu vào hash + localStorage
   const updateRoute = useCallback((newView, newAdminTab = adminTab) => {
     setView(newView);
     setAdminTab(newAdminTab);
@@ -93,7 +97,6 @@ export default function Workspace({ theme, toggleTheme }) {
     } catch { /* ignore */ }
   }, [adminTab]);
 
-  // Đồng bộ hash URL lúc mount và khi người dùng bấm Back/Forward trình duyệt
   useEffect(() => {
     if (view === 'admin') {
       window.history.replaceState(null, '', `#admin/${adminTab}`);
@@ -111,6 +114,40 @@ export default function Workspace({ theme, toggleTheme }) {
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
+
+  // Lắng nghe phím tắt toàn cục (F1, F2, ...) để chuyển nhanh giữa các tab Sidebar
+  useEffect(() => {
+    const onGlobalKeyDown = (e) => {
+      // Nếu đang mở chế độ gán phím mới trong trang Cài đặt thì nhường cho bộ thu phím
+      if (document.querySelector('.shortcut-row.recording')) return;
+
+      const pressed = eventToShortcutString(e);
+      if (!pressed) return;
+
+      // Nếu đang gõ trong input/textarea và phím tắt chỉ là 1 ký tự đơn (không phải F1..F12 hoặc tổ hợp Ctrl/Alt) thì bỏ qua
+      const tag = document.activeElement?.tagName;
+      const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable;
+      const isFunctionOrCombo = /^F([1-9]|1[0-2])$/i.test(pressed) || pressed.includes('+');
+      if (isTyping && !isFunctionOrCombo) return;
+
+      const tabs = getOrderedTabsForRole(user?.role);
+      const matchedTab = tabs.find(
+        (t) => (shortcuts[t.keyId] || '').toUpperCase() === pressed.toUpperCase()
+      );
+
+      if (matchedTab) {
+        e.preventDefault();
+        if (matchedTab.view === 'admin') {
+          updateRoute('admin', matchedTab.adminTab);
+        } else {
+          updateRoute(matchedTab.view);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', onGlobalKeyDown);
+    return () => window.removeEventListener('keydown', onGlobalKeyDown);
+  }, [shortcuts, user?.role, updateRoute]);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -167,28 +204,20 @@ export default function Workspace({ theme, toggleTheme }) {
 
   return (
     <div className="workspace">
-      {isCurrentAdmin ? (
-        <AdminSidebar
-          tab={adminTab}
-          onSelectTab={handleSelectAdminTab}
-          onSwitchToChat={() => handleNavigate('chat')}
-          onNavigate={handleNavigate}
-          collapsed={collapsed}
-          onToggleCollapse={() => setCollapsed((c) => !c)}
-        />
-      ) : (
-        <Sidebar
-          conversations={conversations}
-          activeConvId={activeConvId}
-          view={view}
-          collapsed={collapsed}
-          onToggleCollapse={() => setCollapsed((c) => !c)}
-          onNewChat={handleNewChat}
-          onSelectConv={handleSelectConv}
-          onDeleteConv={handleDeleteConv}
-          onNavigate={handleNavigate}
-        />
-      )}
+      <Sidebar
+        conversations={conversations}
+        activeConvId={activeConvId}
+        view={view}
+        adminTab={adminTab}
+        shortcuts={shortcuts}
+        collapsed={collapsed}
+        onToggleCollapse={() => setCollapsed((c) => !c)}
+        onNewChat={handleNewChat}
+        onSelectConv={handleSelectConv}
+        onDeleteConv={handleDeleteConv}
+        onNavigate={handleNavigate}
+        onSelectAdminTab={handleSelectAdminTab}
+      />
 
       <div className="main-col">
         <header className="topbar">
@@ -204,7 +233,7 @@ export default function Workspace({ theme, toggleTheme }) {
                 <span className="usage-dot" style={{ '--p': `${currentUsage}%` }} title={`Usage ${currentUsage}%`} />
               </div>
             )}
-            <button className="ctl theme-toggle" onClick={toggleTheme} title="Sáng/tối">
+            <button className="ctl theme-toggle" onClick={toggleTheme} title="Đổi giao diện Sáng/Tối">
               {theme === 'dark' ? '☀️' : '🌙'}
             </button>
             <div className="user-menu-wrap">
@@ -215,9 +244,10 @@ export default function Workspace({ theme, toggleTheme }) {
               </button>
               {userMenu && (
                 <div className="user-dropdown" onMouseLeave={() => setUserMenu(false)}>
-                  <button onClick={() => { handleNavigate('profile'); setUserMenu(false); }}>👤 Hồ sơ</button>
-                  <button onClick={() => { handleNavigate('savebox'); setUserMenu(false); }}>📁 Save box</button>
-                  {user.role === 'admin' && <button onClick={() => { handleNavigate('admin'); setUserMenu(false); }}>🛡️ Quản trị</button>}
+                  <button onClick={() => { handleNavigate('profile'); setUserMenu(false); }}>👤 Hồ sơ cá nhân</button>
+                  <button onClick={() => { handleNavigate('settings'); setUserMenu(false); }}>⚙️ Cài đặt phím tắt</button>
+                  <button onClick={() => { handleNavigate('savebox'); setUserMenu(false); }}>📁 Save box của tôi</button>
+                  {user.role === 'admin' && <button onClick={() => { handleNavigate('admin'); setUserMenu(false); }}>🛡️ Quản trị hệ thống</button>}
                   <div className="dropdown-sep" />
                   <button className="danger" onClick={logout}>🚪 Đăng xuất</button>
                 </div>
@@ -237,6 +267,9 @@ export default function Workspace({ theme, toggleTheme }) {
           )}
           {view === 'savebox' && <SaveBox />}
           {view === 'profile' && <Profile />}
+          {view === 'settings' && (
+            <Settings shortcuts={shortcuts} onUpdateShortcuts={setShortcuts} />
+          )}
           {view === 'admin' && user.role === 'admin' && (
             <AdminPanel tab={adminTab} onSelectTab={handleSelectAdminTab} />
           )}

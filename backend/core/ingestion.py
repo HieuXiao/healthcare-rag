@@ -1,33 +1,40 @@
 """
-Ingestion pipeline: OCR tài liệu -> chunking -> Vector DB.
+Ingestion pipeline: OCR tài liệu -> chunking -> node cho Vector DB.
 
 Nâng cấp: chunking nhận biết cấu trúc bệnh án SOAP (Subjective/Objective/
 Assessment/Plan). Với tài liệu có cấu trúc SOAP, mỗi chunk được gắn metadata
 ``soap_section`` để bảo toàn bệnh cảnh; với tài liệu y văn/phác đồ thông thường,
 tự rơi về SentenceSplitter như trước. Giữ embedding tiếng Việt để tương thích.
+
+Việc build/ghi index nằm ở scripts/rebuild_index.py; module này chỉ đọc file và chunk.
 """
 
-import os
 import re
+from pathlib import Path
+from typing import List, Tuple
+
 from dotenv import load_dotenv
-from llama_index.core import (
-    SimpleDirectoryReader,
-    VectorStoreIndex,
-    StorageContext,
-    load_index_from_storage,
-    Settings,
-)
+from llama_index.core import SimpleDirectoryReader
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.schema import TextNode
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 from core.ocr_reader import OcrPdfReader
 
 load_dotenv()
 
-DATA_DIR = "./data"
-PERSIST_DIR = "./vector_db"
-EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "keepitreal/vietnamese-sbert")
+# Đường dẫn tuyệt đối theo vị trí file, không phụ thuộc thư mục đang chạy.
+DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+BASE_EXTS = [".pdf", ".txt"]
+
+# Tham số chunk dùng chung cho tài liệu gốc và tài liệu upload (không đổi giá trị).
+CHUNK_SIZE = 1024
+CHUNK_OVERLAP = 100
+MIN_CHUNK_CHARS = 20
+
+
+def make_splitter() -> SentenceSplitter:
+    return SentenceSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
+
 
 # Tiêu đề các mục SOAP (tiếng Việt + Anh). Dùng để phát hiện cấu trúc bệnh án.
 SOAP_PATTERNS = [
@@ -37,14 +44,6 @@ SOAP_PATTERNS = [
     ("P", r"^\s*(?:P\s*[:\-.]|plan|kế hoạch|hướng (?:điều trị|xử trí)|điều trị)"),
 ]
 _SOAP_COMPILED = [(tag, re.compile(pat, re.IGNORECASE)) for tag, pat in SOAP_PATTERNS]
-
-
-def initialize_rag_pipeline():
-    Settings.embed_model = HuggingFaceEmbedding(
-        model_name=EMBEDDING_MODEL_NAME,
-        trust_remote_code=True,
-    )
-    Settings.text_splitter = SentenceSplitter(chunk_size=1024, chunk_overlap=100)
 
 
 def _detect_soap_section(line: str):
@@ -100,45 +99,38 @@ def _soap_aware_nodes(document, splitter: SentenceSplitter):
     return nodes
 
 
-def load_or_create_index():
-    initialize_rag_pipeline()
+def list_base_files(data_dir: Path = DATA_DIR) -> List[Path]:
+    """File tài liệu gốc hệ thống: *.pdf / *.txt nằm trực tiếp trong backend/data."""
+    data_dir = Path(data_dir)
+    if not data_dir.is_dir():
+        return []
+    return sorted(p for p in data_dir.iterdir() if p.is_file() and p.suffix.lower() in BASE_EXTS)
 
-    if not os.path.exists(os.path.join(PERSIST_DIR, "docstore.json")):
-        print("🚀 Khởi động Luồng Ingestion (OCR + SOAP-aware chunking)...")
 
-        reader = SimpleDirectoryReader(
-            DATA_DIR,
-            required_exts=[".pdf", ".txt"],
-            file_extractor={".pdf": OcrPdfReader(tesseract_lang="vie")},
-        )
-        documents = reader.load_data()
-        print(f"📄 Đã đọc xong {len(documents)} tài liệu.")
+def load_base_documents(data_dir: Path = DATA_DIR) -> List:
+    """Đọc (OCR nếu cần) toàn bộ tài liệu gốc trong backend/data."""
+    if not list_base_files(data_dir):
+        return []
+    reader = SimpleDirectoryReader(
+        str(data_dir),
+        required_exts=BASE_EXTS,
+        file_extractor={".pdf": OcrPdfReader(tesseract_lang="vie")},
+    )
+    return reader.load_data()
 
-        splitter = Settings.text_splitter
-        raw_nodes = []
-        soap_docs = 0
-        for doc in documents:
-            if _has_soap_structure(doc.get_content()):
-                soap_docs += 1
-            raw_nodes.extend(_soap_aware_nodes(doc, splitter))
 
-        valid_nodes = [n for n in raw_nodes if len(n.get_content().strip()) > 20]
-        print(f"🧩 Băm & lọc nhiễu: {len(valid_nodes)} chunk chất lượng ({soap_docs} tài liệu dạng SOAP).")
-
-        print("⚡ Tạo Vector DB (Local Embedding)...")
-        index = VectorStoreIndex(valid_nodes, show_progress=True)
-        index.storage_context.persist(persist_dir=PERSIST_DIR)
-        print("✅ Đã lưu Vector DB thành công!")
-    else:
-        print("⚡ Đã tìm thấy Vector DB local. Đang load...")
-        storage_context = StorageContext.from_defaults(persist_dir=PERSIST_DIR)
-        index = load_index_from_storage(storage_context)
-        print("✅ Load Vector DB thành công!")
-
-    return index
+def build_nodes(documents: List, splitter: SentenceSplitter = None) -> Tuple[List, int]:
+    """Chunk (SOAP-aware) và lọc nhiễu. Trả về (nodes, số tài liệu dạng SOAP)."""
+    splitter = splitter or make_splitter()
+    raw_nodes = []
+    soap_docs = 0
+    for doc in documents:
+        if _has_soap_structure(doc.get_content()):
+            soap_docs += 1
+        raw_nodes.extend(_soap_aware_nodes(doc, splitter))
+    nodes = [n for n in raw_nodes if len(n.get_content().strip()) > MIN_CHUNK_CHARS]
+    return nodes, soap_docs
 
 
 if __name__ == "__main__":
-    print("Bắt đầu chạy thử Ingestion Pipeline...")
-    index = load_or_create_index()
-    print("Sẵn sàng cho việc truy xuất (Retrieval)!")
+    print("Build index: cd backend && python scripts/rebuild_index.py --from-scratch --dry-run")

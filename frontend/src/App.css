@@ -192,6 +192,7 @@
 }
 .chip-guideline { color: var(--danger); border-color: var(--danger); background: var(--danger-tint); }
 .chip-ehr { color: var(--brand-ink); border-color: var(--brand); background: var(--brand-tint); }
+.chip-chitchat { color: var(--accent); border-color: var(--accent); background: var(--accent-tint); font-weight: 600; }
 .chip-phi { color: var(--accent); border-color: var(--accent); background: var(--accent-tint); }
 .chip-ok { color: var(--ok); border-color: var(--brand); background: var(--brand-tint); }
 .chip-warn { color: var(--warn); border-color: var(--warn); background: var(--warn-tint); }

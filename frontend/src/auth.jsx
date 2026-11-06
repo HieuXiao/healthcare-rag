@@ -25,6 +25,16 @@ export function AuthProvider({ children }) {
   const login = async (email, password) => {
     const res = await api.login({ email, password });
     setToken(res.access_token);
+    try {
+      if (res.user?.role === 'admin') {
+        localStorage.setItem('medrag-active-view', 'admin');
+        localStorage.setItem('medrag-admin-tab', 'dashboard');
+        window.history.replaceState(null, '', '#admin/dashboard');
+      } else {
+        localStorage.setItem('medrag-active-view', 'chat');
+        window.history.replaceState(null, '', '#chat');
+      }
+    } catch { /* ignore */ }
     setUser(res.user);
     return res.user;
   };
@@ -32,12 +42,22 @@ export function AuthProvider({ children }) {
   const register = async (email, username, password) => {
     const res = await api.register({ email, username, password });
     setToken(res.access_token);
+    try {
+      const defaultView = res.user?.role === 'admin' ? 'admin' : 'chat';
+      localStorage.setItem('medrag-active-view', defaultView);
+      window.history.replaceState(null, '', defaultView === 'admin' ? '#admin/dashboard' : '#chat');
+    } catch { /* ignore */ }
     setUser(res.user);
     return res.user;
   };
 
   const logout = () => {
     setToken('');
+    try {
+      localStorage.removeItem('medrag-active-view');
+      localStorage.removeItem('medrag-admin-tab');
+      window.history.replaceState(null, '', window.location.pathname);
+    } catch { /* ignore */ }
     setUser(null);
   };
 

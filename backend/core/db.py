@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Optional
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -20,6 +21,42 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # Sentinel cho khối Vector DB gốc (các node phác đồ có sẵn, không có doc_key).
 BASE_INDEX_MARKER = "__base_index__"
+
+
+def to_stored_path(path: Path) -> str:
+    """Giá trị lưu vào Document.stored_path: đường dẫn TƯƠNG ĐỐI so với UPLOAD_DIR."""
+    return Path(path).resolve().relative_to(UPLOAD_DIR.resolve()).as_posix()
+
+
+def is_legacy_absolute(stored_path: str) -> bool:
+    """Dữ liệu cũ lưu đường dẫn tuyệt đối (vd. D:\\Project\\...\\uploads\\u3_x.txt)."""
+    return PureWindowsPath(stored_path).is_absolute() or PurePosixPath(stored_path).is_absolute()
+
+
+def legacy_file_name(stored_path: str) -> str:
+    """Lấy tên file từ đường dẫn cũ (chấp nhận cả dấu \\ của Windows)."""
+    return PureWindowsPath(stored_path).name
+
+
+def resolve_stored_path(stored_path: Optional[str]) -> Optional[Path]:
+    """
+    Đổi Document.stored_path thành đường dẫn file thật trong UPLOAD_DIR.
+    Trả None cho khối tài liệu gốc, giá trị rỗng hoặc đường dẫn thoát khỏi UPLOAD_DIR.
+    """
+    if not stored_path or stored_path == BASE_INDEX_MARKER:
+        return None
+    if is_legacy_absolute(stored_path):
+        # Tương thích dữ liệu chưa migrate: thử đường dẫn cũ, sau đó tìm theo tên file.
+        p = Path(stored_path)
+        if p.exists():
+            return p
+        return UPLOAD_DIR / legacy_file_name(stored_path)
+    root = UPLOAD_DIR.resolve()
+    p = (root / stored_path).resolve()
+    if root not in p.parents:
+        return None  # chặn path traversal ("../..") và trỏ vào chính thư mục
+    return p
+
 
 engine = create_engine(
     f"sqlite:///{DB_PATH}",
