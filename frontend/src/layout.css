@@ -33,6 +33,13 @@
   border-radius: 999px; transition: background .2s, color .2s; }
 .auth-card .auth-tabs button.active { background: rgba(120, 190, 255, .16); color: #fff; box-shadow: none; }
 .auth-card .auth-form { gap: 18px; }
+.password-wrap { position: relative; display: flex; align-items: center; width: 100%; }
+.password-wrap input { width: 100%; padding-right: 46px !important; }
+.password-wrap input::-ms-reveal, .password-wrap input::-ms-clear { display: none; }
+.password-toggle { position: absolute; right: 10px; display: grid; place-items: center; width: 32px; height: 32px;
+  padding: 0; border: 0; border-radius: 8px; background: transparent; color: rgba(205, 225, 255, .6);
+  cursor: pointer; transition: color .15s, background .15s; }
+.password-toggle:hover { color: #fff; background: rgba(255, 255, 255, .08); }
 .auth-card .auth-form input { height: 48px; padding: 0 16px; border-radius: 14px; font-size: 15px; color: #fff;
   background: rgba(255, 255, 255, .05); border-color: rgba(255, 255, 255, .08); }
 .auth-card .auth-form input::placeholder { color: rgba(205, 225, 255, .4); }
