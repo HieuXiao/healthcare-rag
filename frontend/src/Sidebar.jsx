@@ -9,7 +9,7 @@ const ICONS = {
     </svg>
   ),
   plus: (
-    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
       <line x1="12" y1="5" x2="12" y2="19" />
       <line x1="5" y1="12" x2="19" y2="12" />
     </svg>
@@ -65,6 +65,12 @@ const ICONS = {
       <circle cx="12" cy="7" r="4" />
     </svg>
   ),
+  settings: (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  ),
   trash: (
     <svg viewBox="0 0 24 24" width="13.5" height="13.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="3 6 5 6 21 6" />
@@ -91,11 +97,11 @@ const ICONS = {
 };
 
 const ADMIN_NAV_ITEMS = [
-  { id: 'dashboard', label: 'Tổng quan & Biểu đồ', icon: ICONS.dashboard },
-  { id: 'chats', label: 'Truy vấn & Bám nguồn', icon: ICONS.factCheck },
-  { id: 'auth-logs', label: 'Xác thực & Bảo mật', icon: ICONS.security },
-  { id: 'docs', label: 'Tài liệu gốc hệ thống', icon: ICONS.docs },
-  { id: 'users', label: 'Quản lý người dùng', icon: ICONS.users },
+  { id: 'dashboard', keyId: 'admin:dashboard', label: 'Tổng quan & Biểu đồ', icon: ICONS.dashboard },
+  { id: 'chats', keyId: 'admin:chats', label: 'Truy vấn & Bám nguồn', icon: ICONS.factCheck },
+  { id: 'auth-logs', keyId: 'admin:auth-logs', label: 'Xác thực & Bảo mật', icon: ICONS.security },
+  { id: 'docs', keyId: 'admin:docs', label: 'Tài liệu gốc hệ thống', icon: ICONS.docs },
+  { id: 'users', keyId: 'admin:users', label: 'Quản lý người dùng', icon: ICONS.users },
 ];
 
 export default function Sidebar({
@@ -103,6 +109,7 @@ export default function Sidebar({
   activeConvId,
   view,
   adminTab,
+  shortcuts = {},
   onNewChat,
   onSelectConv,
   onDeleteConv,
@@ -155,6 +162,7 @@ export default function Sidebar({
                   key={item.id}
                   icon={item.icon}
                   label={item.label}
+                  shortcut={shortcuts[item.keyId]}
                   active={view === 'admin' && adminTab === item.id}
                   collapsed={collapsed}
                   onClick={() => onSelectAdminTab(item.id)}
@@ -168,24 +176,30 @@ export default function Sidebar({
         <div className="nav-group">
           {!collapsed && <div className="nav-group-label">Lâm sàng & Cá nhân</div>}
           <div className="nav-list">
-            <div className="nav-item-with-action">
-              <NavItem
-                icon={ICONS.chat}
-                label="Phòng khám (Chat)"
-                active={view === 'chat'}
-                collapsed={collapsed}
-                onClick={() => onNavigate('chat')}
-              />
-              {!collapsed && (
-                <button
-                  className="quick-add-btn"
-                  onClick={onNewChat}
-                  title="Cuộc trò chuyện mới"
-                >
-                  {ICONS.plus}
-                </button>
-              )}
-            </div>
+            <NavItem
+              icon={ICONS.chat}
+              label="Phòng khám (Chat)"
+              shortcut={shortcuts['view:chat']}
+              active={view === 'chat'}
+              collapsed={collapsed}
+              onClick={() => onNavigate('chat')}
+              extraAction={
+                !collapsed && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    className="quick-add-inline"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onNewChat();
+                    }}
+                    title="Cuộc trò chuyện mới"
+                  >
+                    {ICONS.plus}
+                  </span>
+                )
+              }
+            />
 
             {/* Lịch sử hội thoại gọn gàng ngay dưới mục Phòng khám khi đang ở Chat */}
             {!collapsed && view === 'chat' && (
@@ -225,6 +239,7 @@ export default function Sidebar({
             <NavItem
               icon={ICONS.folder}
               label="Save box của tôi"
+              shortcut={shortcuts['view:savebox']}
               active={view === 'savebox'}
               collapsed={collapsed}
               onClick={() => onNavigate('savebox')}
@@ -232,9 +247,18 @@ export default function Sidebar({
             <NavItem
               icon={ICONS.user}
               label="Hồ sơ cá nhân"
+              shortcut={shortcuts['view:profile']}
               active={view === 'profile'}
               collapsed={collapsed}
               onClick={() => onNavigate('profile')}
+            />
+            <NavItem
+              icon={ICONS.settings}
+              label="Cài đặt hệ thống"
+              shortcut={shortcuts['view:settings']}
+              active={view === 'settings'}
+              collapsed={collapsed}
+              onClick={() => onNavigate('settings')}
             />
           </div>
         </div>
@@ -274,17 +298,23 @@ export default function Sidebar({
   );
 }
 
-function NavItem({ icon, label, active, collapsed, onClick }) {
+function NavItem({ icon, label, shortcut, active, collapsed, onClick, extraAction }) {
+  const tooltip = shortcut ? `${label} (${shortcut})` : label;
   return (
     <button
       className={`sidebar-nav-item ${active ? 'active' : ''}`}
       onClick={onClick}
-      title={collapsed ? label : undefined}
+      title={tooltip}
     >
       <span className="sidebar-nav-icon" aria-hidden="true">
         {icon}
       </span>
-      {!collapsed && <span className="sidebar-nav-label">{label}</span>}
+      {!collapsed && (
+        <>
+          <span className="sidebar-nav-label">{label}</span>
+          {extraAction && <span className="sidebar-nav-right">{extraAction}</span>}
+        </>
+      )}
     </button>
   );
 }
