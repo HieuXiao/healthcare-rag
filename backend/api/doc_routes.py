@@ -72,7 +72,10 @@ def upload_document(file: UploadFile = File(...), note: str = Form(""),
         db.commit()
         raise HTTPException(status_code=500, detail=f"Lỗi xử lý tài liệu: {e}")
 
-    db.add(ActivityLog(user_id=user.id, action="upload", detail=f"{file.filename} ({doc.num_chunks} chunk)"))
+    # Tuân thủ GDPR Art. 5(1)(c) & HIPAA: Không lưu tên file cá nhân của user vào ActivityLog của Admin
+    # (tránh rò rỉ họ tên bệnh nhân trong tên file, ví dụ: "benh_an_nguyen_van_a.pdf").
+    ext = Path(file.filename or "").suffix.lower() or "file"
+    db.add(ActivityLog(user_id=user.id, action="upload", detail=f"Tài liệu cá nhân ({ext}, {doc.num_chunks} đoạn)"))
     db.commit()
     return _doc_out(doc)
 

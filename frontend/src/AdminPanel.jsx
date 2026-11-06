@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from './api.js';
+import { useAuth } from './auth.jsx';
 
 export default function AdminPanel({ tab = 'dashboard', onSelectTab }) {
   const currentTab = tab || 'dashboard';
 
   return (
     <div className="page-pad admin-container">
-      {/* Top tabs đồng bộ với AdminSidebar */}
+      {/* Top tabs đồng bộ với AdminSidebar (hiển thị trên màn hình nhỏ) */}
       <div className="admin-tabs">
         <button
           className={currentTab === 'dashboard' ? 'active' : ''}
@@ -18,13 +19,13 @@ export default function AdminPanel({ tab = 'dashboard', onSelectTab }) {
           className={currentTab === 'chats' ? 'active' : ''}
           onClick={() => onSelectTab && onSelectTab('chats')}
         >
-          💬 Nhật ký Hỏi đáp & Bám nguồn
+          💬 Nhật ký Truy vấn &amp; Đánh giá RAG
         </button>
         <button
           className={currentTab === 'auth-logs' ? 'active' : ''}
           onClick={() => onSelectTab && onSelectTab('auth-logs')}
         >
-          🔐 Xác thực & Kiểm toán
+          🔐 Xác thực &amp; Kiểm toán
         </button>
         <button
           className={currentTab === 'docs' ? 'active' : ''}
@@ -36,7 +37,7 @@ export default function AdminPanel({ tab = 'dashboard', onSelectTab }) {
           className={currentTab === 'users' ? 'active' : ''}
           onClick={() => onSelectTab && onSelectTab('users')}
         >
-          👥 Người dùng
+          👥 Người dùng &amp; Phân quyền
         </button>
       </div>
 
@@ -77,7 +78,7 @@ function Dashboard({ onNavigateTab }) {
       <div className="stat-grid admin-kpi-grid">
         <StatCard icon="👥" label="Người dùng" value={s.total_users || 0} hint="Tài khoản trong hệ thống" />
         <StatCard icon="💬" label="Tổng lượt hỏi RAG" value={s.total_chats || 0} hint={`${s.chats_today || 0} câu hỏi hôm nay`} />
-        <StatCard icon="📄" label="Tài liệu tri thức" value={s.total_documents || 0} hint={`${s.system_documents || 1} gốc · ${s.user_documents || 0} Save box`} />
+        <StatCard icon="📄" label="Tài liệu tri thức" value={s.total_documents || 0} hint={`${s.system_documents || 1} gốc · ${s.user_documents || 0} Namespace riêng`} />
         <StatCard
           icon="🎯"
           label="Bám nguồn TB"
@@ -100,7 +101,7 @@ function Dashboard({ onNavigateTab }) {
           <div className="panel-head">
             <div>
               <h3>🎯 Kiểm tra bám nguồn (Med-FactCheck)</h3>
-              <p className="panel-sub">Độ tin cậy trích dẫn y văn & phát hiện ảo giác câu trả lời</p>
+              <p className="panel-sub">Độ tin cậy trích dẫn y văn &amp; phát hiện ảo giác câu trả lời</p>
             </div>
           </div>
           <FactCheckDonutChart dist={groundingDist} avg={avgGrounded} total={s.total_chats || 0} />
@@ -111,7 +112,7 @@ function Dashboard({ onNavigateTab }) {
           <div className="panel-head">
             <div>
               <h3>🕸️ Cấu trúc Tri thức Y khoa</h3>
-              <p className="panel-sub">Phân bổ thực thể theo bệnh, thuốc & tác dụng phụ trong đồ thị</p>
+              <p className="panel-sub">Phân bổ thực thể theo bệnh, thuốc &amp; tác dụng phụ trong đồ thị</p>
             </div>
           </div>
           <KnowledgeGraphBarChart entityTypes={graphStats.entity_types} />
@@ -121,7 +122,7 @@ function Dashboard({ onNavigateTab }) {
         <div className="panel chart-panel">
           <div className="panel-head">
             <div>
-              <h3>📈 Xu hướng truy vấn & Điểm bám nguồn</h3>
+              <h3>📈 Xu hướng truy vấn &amp; Điểm bám nguồn</h3>
               <p className="panel-sub">Số lượng câu hỏi y khoa và điểm trung thực theo ngày</p>
             </div>
           </div>
@@ -140,12 +141,12 @@ function Dashboard({ onNavigateTab }) {
         </div>
       </div>
 
-      {/* 3. Hoạt động gần đây: ĐÃ TÁCH BIỆT RÕ RÀNG GIỮA CHAT VÀ AUTH */}
+      {/* 3. Hoạt động gần đây: Query Logs (Đã băm ID + PII Redaction) & Auth Logs */}
       <div className="panel activity-section-panel">
         <div className="panel-head activity-head-tabs">
           <div>
-            <h3>📋 Nhật ký hoạt động gần đây</h3>
-            <p className="panel-sub">Dữ liệu được phân tách rõ ràng giữa hỏi đáp chuyên môn và xác thực hệ thống</p>
+            <h3>📋 Nhật ký hoạt động gần đây (Anonymized &amp; PII Redacted)</h3>
+            <p className="panel-sub">Admin theo dõi được chất lượng truy vấn nhưng danh tính User được băm thành mã ẩn danh và PII/PHI tự động bị che mờ</p>
           </div>
           <div className="activity-tabs-switch">
             <button
@@ -158,12 +159,12 @@ function Dashboard({ onNavigateTab }) {
               className={`act-tab-btn ${activityTab === 'auth' ? 'active' : ''}`}
               onClick={() => setActivityTab('auth')}
             >
-              🔐 Đăng nhập & Đăng ký ({authLogs.length})
+              🔐 Đăng nhập &amp; Hệ thống ({authLogs.length})
             </button>
           </div>
         </div>
 
-        {/* BẢNG 1: TRUY VẤN LÂM SÀNG & BÁM NGUỒN */}
+        {/* BẢNG 1: TRUY VẤN LÂM SÀNG (ANONYMIZED USER ID + REDACTED PII) */}
         {activityTab === 'chats' && (
           <div className="activity-tab-content">
             {chatLogs.length === 0 ? (
@@ -172,16 +173,18 @@ function Dashboard({ onNavigateTab }) {
               <div className="log-table chat-activity-table">
                 <div className="log-head">
                   <span>Thời gian</span>
-                  <span>Bác sĩ / Người hỏi</span>
-                  <span>Câu hỏi lâm sàng</span>
+                  <span>ID Ẩn danh</span>
+                  <span>Câu hỏi lâm sàng (Đã che PII/PHI)</span>
                   <span>Model AI</span>
                   <span>Bám nguồn</span>
                 </div>
                 {chatLogs.slice(0, 10).map((r) => (
                   <div key={r.id} className="log-row">
                     <span className="log-time">{fmt(r.created_at)}</span>
-                    <span className="log-user" title={r.user_email}>{r.user}</span>
-                    <span className="log-detail query-text" title={r.query}>{r.query}</span>
+                    <span className="log-mono" title="ID ẩn danh bảo vệ danh tính người hỏi">{r.user}</span>
+                    <span className="log-detail query-text" title={r.query}>
+                      <RedactedText text={r.query} />
+                    </span>
                     <span className="log-mono">{r.model}</span>
                     <span><GroundingBadge ratio={r.grounded_ratio} /></span>
                   </div>
@@ -190,7 +193,7 @@ function Dashboard({ onNavigateTab }) {
             )}
             <div className="activity-footer">
               <button className="link-action-btn" onClick={() => onNavigateTab && onNavigateTab('chats')}>
-                Xem toàn bộ lịch sử hỏi đáp lâm sàng & Fact-Check →
+                Xem toàn bộ Query Logs &amp; Phản hồi đánh giá RAG →
               </button>
             </div>
           </div>
@@ -205,14 +208,14 @@ function Dashboard({ onNavigateTab }) {
               <div className="log-table auth-activity-table">
                 <div className="log-head">
                   <span>Thời gian</span>
-                  <span>Tài khoản</span>
+                  <span>ID Ẩn danh</span>
                   <span>Hành động</span>
                   <span>Chi tiết sự kiện</span>
                 </div>
                 {authLogs.slice(0, 10).map((r) => (
                   <div key={r.id} className="log-row auth-row">
                     <span className="log-time">{fmt(r.created_at)}</span>
-                    <span className="log-user" title={r.user_email}>{r.user}</span>
+                    <span className="log-mono">{r.user}</span>
                     <span><ActionBadge action={r.action} /></span>
                     <span className="log-detail" title={r.detail}>{r.detail}</span>
                   </div>
@@ -221,7 +224,7 @@ function Dashboard({ onNavigateTab }) {
             )}
             <div className="activity-footer">
               <button className="link-action-btn" onClick={() => onNavigateTab && onNavigateTab('auth-logs')}>
-                Xem toàn bộ nhật ký xác thực & kiểm toán bảo mật →
+                Xem toàn bộ nhật ký xác thực &amp; kiểm toán bảo mật →
               </button>
             </div>
           </div>
@@ -232,17 +235,22 @@ function Dashboard({ onNavigateTab }) {
 }
 
 /* ==========================================================================
-   2. TRANG CHI TIẾT 1: NHẬT KÝ HỎI ĐÁP & BÁM NGUỒN (CHATS VIEW)
+   2. TRANG CHI TIẾT 1: QUERY LOGS (PII REDACTED) & OPT-IN RAG EVALUATION
    ========================================================================== */
 function ChatLogsView() {
   const [logs, setLogs] = useState([]);
+  const [feedbacks, setFeedbacks] = useState([]);
+  const [subMode, setSubMode] = useState('query-logs'); // 'query-logs' | 'feedback'
   const [filter, setFilter] = useState('all'); // 'all' | 'high' | 'medium' | 'low'
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     api.adminActivity()
-      .then((d) => setLogs(d.chat_logs || []))
+      .then((d) => {
+        setLogs(d.chat_logs || []);
+        setFeedbacks(d.feedback_logs || []);
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -263,60 +271,115 @@ function ChatLogsView() {
 
   return (
     <div className="panel">
-      <div className="panel-head">
+      <div className="panel-head activity-head-tabs">
         <div>
-          <h3>💬 Nhật ký Truy vấn Lâm sàng & Đánh giá Bám nguồn (Med-FactCheck)</h3>
-          <p className="panel-sub">Toàn bộ câu hỏi của bác sĩ, mô hình ngôn ngữ phản hồi và tỉ lệ bám nguồn tri thức</p>
+          <h3>💬 Nhật ký Truy vấn (PII Redacted) &amp; Đánh giá Chất lượng RAG</h3>
+          <p className="panel-sub">
+            Hiển thị câu hỏi dưới dạng ẩn danh (<code>User_XXXXX</code>) và tự động che thông tin nhạy cảm (<code>[REDACTED_NAME]</code>, <code>[REDACTED_PHONE]</code>…).
+          </p>
         </div>
-      </div>
-
-      {/* Bộ lọc và tìm kiếm */}
-      <div className="filter-bar">
-        <input
-          type="text"
-          className="ctl filter-search"
-          placeholder="🔍 Tìm câu hỏi, tên bác sĩ, model..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-        <div className="filter-pill-group">
-          <button className={`filter-pill ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
-            Tất cả ({logs.length})
+        <div className="activity-tabs-switch">
+          <button
+            className={`act-tab-btn ${subMode === 'query-logs' ? 'active' : ''}`}
+            onClick={() => setSubMode('query-logs')}
+          >
+            📋 Query Logs ẩn danh ({logs.length})
           </button>
-          <button className={`filter-pill pill-high ${filter === 'high' ? 'active' : ''}`} onClick={() => setFilter('high')}>
-            🟢 An toàn (≥70%)
-          </button>
-          <button className={`filter-pill pill-med ${filter === 'medium' ? 'active' : ''}`} onClick={() => setFilter('medium')}>
-            🟡 Cần lưu ý (40-69%)
-          </button>
-          <button className={`filter-pill pill-low ${filter === 'low' ? 'active' : ''}`} onClick={() => setFilter('low')}>
-            🔴 Ảo giác (&lt;40%)
+          <button
+            className={`act-tab-btn ${subMode === 'feedback' ? 'active' : ''}`}
+            onClick={() => setSubMode('feedback')}
+          >
+            🚩 Báo lỗi User đồng ý chia sẻ ({feedbacks.length})
           </button>
         </div>
       </div>
 
-      {loading ? (
-        <div className="conv-empty">Đang tải danh sách câu hỏi…</div>
-      ) : filtered.length === 0 ? (
-        <div className="conv-empty">Không tìm thấy truy vấn nào phù hợp.</div>
-      ) : (
-        <div className="log-table chat-activity-table full-table">
-          <div className="log-head">
-            <span>Thời gian</span>
-            <span>Người hỏi</span>
-            <span>Nội dung câu hỏi lâm sàng</span>
-            <span>Model AI</span>
-            <span>Fact-Check Overlap</span>
-          </div>
-          {filtered.map((r) => (
-            <div key={r.id} className="log-row">
-              <span className="log-time">{fmt(r.created_at)}</span>
-              <span className="log-user" title={r.user_email}>{r.user}</span>
-              <span className="log-detail query-text expanded" title={r.query}>{r.query}</span>
-              <span className="log-mono">{r.model}</span>
-              <span><GroundingBadge ratio={r.grounded_ratio} showDetail /></span>
+      {subMode === 'query-logs' ? (
+        <>
+          <div className="filter-bar">
+            <input
+              type="text"
+              className="ctl filter-search"
+              placeholder="🔍 Tìm nội dung câu hỏi, User_ID, model..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <div className="filter-pill-group">
+              <button className={`filter-pill ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
+                Tất cả ({logs.length})
+              </button>
+              <button className={`filter-pill pill-high ${filter === 'high' ? 'active' : ''}`} onClick={() => setFilter('high')}>
+                🟢 An toàn (≥70%)
+              </button>
+              <button className={`filter-pill pill-med ${filter === 'medium' ? 'active' : ''}`} onClick={() => setFilter('medium')}>
+                🟡 Cần lưu ý (40-69%)
+              </button>
+              <button className={`filter-pill pill-low ${filter === 'low' ? 'active' : ''}`} onClick={() => setFilter('low')}>
+                🔴 Ảo giác (&lt;40%)
+              </button>
             </div>
-          ))}
+          </div>
+
+          {loading ? (
+            <div className="conv-empty">Đang tải danh sách câu hỏi…</div>
+          ) : filtered.length === 0 ? (
+            <div className="conv-empty">Không tìm thấy truy vấn nào phù hợp.</div>
+          ) : (
+            <div className="log-table chat-activity-table full-table">
+              <div className="log-head">
+                <span>Thời gian</span>
+                <span>ID Ẩn danh</span>
+                <span>Nội dung câu hỏi (Đã che PII/PHI tự động)</span>
+                <span>Model AI</span>
+                <span>Fact-Check Overlap</span>
+              </div>
+              {filtered.map((r) => (
+                <div key={r.id} className="log-row">
+                  <span className="log-time">{fmt(r.created_at)}</span>
+                  <span className="log-mono">{r.user}</span>
+                  <span className="log-detail query-text expanded" title={r.query}>
+                    <RedactedText text={r.query} />
+                  </span>
+                  <span className="log-mono">{r.model}</span>
+                  <span><GroundingBadge ratio={r.grounded_ratio} showDetail /></span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <div style={{ marginTop: 12 }}>
+          {feedbacks.length === 0 ? (
+            <div className="conv-empty">
+              Chưa có phản hồi báo lỗi nào từ người dùng. (Ở màn hình Chat, người dùng có thể bấm <strong>&ldquo;🚩 Báo lỗi câu trả lời&rdquo;</strong> để đồng ý gửi đoạn hội thoại ẩn danh cho Admin kiểm tra).
+            </div>
+          ) : (
+            <div className="doc-table">
+              {feedbacks.map((fb) => (
+                <div key={fb.id} className="doc-row" style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
+                    <div>
+                      <span className="log-mono font-bold">{fb.user}</span>
+                      <span className="log-time" style={{ marginLeft: 10 }}>{fmt(fb.created_at)}</span>
+                      <span className="tag tag-admin_upload" style={{ marginLeft: 10 }}>🚩 {fb.reason}</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <span className="log-mono">{fb.model}</span>
+                      <GroundingBadge ratio={fb.grounded_ratio} />
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 13 }}>
+                    <strong>Câu hỏi:</strong> <RedactedText text={fb.query} />
+                  </div>
+                  {fb.answer && (
+                    <div style={{ fontSize: 12.5, color: 'var(--muted)' }}>
+                      <strong>Phản hồi AI:</strong> <RedactedText text={fb.answer} />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -324,7 +387,7 @@ function ChatLogsView() {
 }
 
 /* ==========================================================================
-   3. TRANG CHI TIẾT 2: LỊCH SỬ XÁC THỰC & BẢO MẬT (AUTH LOGS VIEW)
+   3. TRANG CHI TIẾT 2: LỊCH SỬ XÁC THỰC & KIỂM TOÁN BẢO MẬT (AUDITOR VIEW)
    ========================================================================== */
 function AuthLogsView() {
   const [logs, setLogs] = useState([]);
@@ -343,8 +406,7 @@ function AuthLogsView() {
     if (search.trim()) {
       const q = search.toLowerCase();
       const match = (item.user || '').toLowerCase().includes(q) ||
-                    (item.detail || '').toLowerCase().includes(q) ||
-                    (item.user_email || '').toLowerCase().includes(q);
+                    (item.detail || '').toLowerCase().includes(q);
       if (!match) return false;
     }
     return true;
@@ -354,8 +416,8 @@ function AuthLogsView() {
     <div className="panel">
       <div className="panel-head">
         <div>
-          <h3>🔐 Nhật ký Xác thực & Kiểm toán Bảo mật (Audit Log)</h3>
-          <p className="panel-sub">Theo dõi các lượt Đăng nhập, Đăng ký tài khoản và hoạt động tải lên tài liệu y khoa</p>
+          <h3>🔐 Nhật ký Xác thực &amp; Kiểm toán Bảo mật (Auditor Log)</h3>
+          <p className="panel-sub">Theo dõi các lượt Đăng nhập, Đăng ký, Phân quyền RBAC và hoạt động nạp tài liệu hệ thống</p>
         </div>
       </div>
 
@@ -363,7 +425,7 @@ function AuthLogsView() {
         <input
           type="text"
           className="ctl filter-search"
-          placeholder="🔍 Tìm người dùng, email, sự kiện..."
+          placeholder="🔍 Tìm ID ẩn danh (User_...), sự kiện..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -378,10 +440,13 @@ function AuthLogsView() {
             🟣 Đăng ký
           </button>
           <button className={`filter-pill ${actionFilter === 'upload' ? 'active' : ''}`} onClick={() => setActionFilter('upload')}>
-            🟢 Upload Save box
+            🟢 Upload Namespace riêng
           </button>
           <button className={`filter-pill ${actionFilter === 'admin_upload' ? 'active' : ''}`} onClick={() => setActionFilter('admin_upload')}>
             🛡️ Upload Tài liệu gốc
+          </button>
+          <button className={`filter-pill ${actionFilter === 'role_change' ? 'active' : ''}`} onClick={() => setActionFilter('role_change')}>
+            ⚖️ Phân quyền RBAC
           </button>
         </div>
       </div>
@@ -394,14 +459,14 @@ function AuthLogsView() {
         <div className="log-table auth-activity-table full-table">
           <div className="log-head">
             <span>Thời gian</span>
-            <span>Tài khoản</span>
+            <span>ID Ẩn danh</span>
             <span>Hành động</span>
-            <span>Chi tiết sự kiện / Địa chỉ</span>
+            <span>Chi tiết sự kiện</span>
           </div>
           {filtered.map((r) => (
             <div key={r.id} className="log-row auth-row">
               <span className="log-time">{fmt(r.created_at)}</span>
-              <span className="log-user" title={r.user_email}>{r.user}</span>
+              <span className="log-mono">{r.user}</span>
               <span><ActionBadge action={r.action} /></span>
               <span className="log-detail" title={r.detail}>{r.detail}</span>
             </div>
@@ -417,18 +482,16 @@ function AuthLogsView() {
    ========================================================================== */
 
 /** Biểu đồ Donut: Phân bổ Bám nguồn (Fact-Check) */
-function FactCheckDonutChart({ dist, avg, total }) {
+function FactCheckDonutChart({ dist, avg }) {
   const high = dist.high || 0;
   const med = dist.medium || 0;
   const low = dist.low || 0;
   const sum = high + med + low;
 
-  // Nếu chưa có dữ liệu, hiển thị placeholder thân thiện
   const pHigh = sum ? (high / sum) * 100 : 0;
   const pMed = sum ? (med / sum) * 100 : 0;
   const pLow = sum ? (low / sum) * 100 : 0;
 
-  // Tính chu vi SVG circle (r = 45 -> C ≈ 282.74)
   const C = 282.74;
   const lenHigh = (pHigh / 100) * C;
   const lenMed = (pMed / 100) * C;
@@ -441,21 +504,18 @@ function FactCheckDonutChart({ dist, avg, total }) {
           <circle cx="60" cy="60" r="45" className="donut-bg" />
           {sum > 0 ? (
             <>
-              {/* Vạch High (Green) */}
               <circle
                 cx="60" cy="60" r="45"
                 className="donut-segment segment-high"
                 strokeDasharray={`${lenHigh} ${C - lenHigh}`}
                 strokeDashoffset="0"
               />
-              {/* Vạch Med (Yellow) */}
               <circle
                 cx="60" cy="60" r="45"
                 className="donut-segment segment-med"
                 strokeDasharray={`${lenMed} ${C - lenMed}`}
                 strokeDashoffset={-lenHigh}
               />
-              {/* Vạch Low (Red) */}
               <circle
                 cx="60" cy="60" r="45"
                 className="donut-segment segment-low"
@@ -534,7 +594,7 @@ function KnowledgeGraphBarChart({ entityTypes = [] }) {
         </div>
       )}
       <div className="kg-footer-hint">
-        <span>ICD-10 Ontology · Phác đồ Đái tháo đường & Thuốc thiết yếu WHO</span>
+        <span>ICD-10 Ontology · Phác đồ Đái tháo đường &amp; Thuốc thiết yếu WHO</span>
       </div>
     </div>
   );
@@ -596,14 +656,14 @@ function ModelUsageBars({ perModel = [] }) {
         ))}
       </div>
       <div className="model-tip-banner">
-        <span>⚡ Hệ thống kích hoạt Gemini 3.5 Flash với cơ chế Retry 503 & Failover tự động.</span>
+        <span>⚡ Hệ thống kích hoạt Gemini 3.5 Flash với cơ chế Retry 503 &amp; Failover tự động.</span>
       </div>
     </div>
   );
 }
 
 /* ==========================================================================
-   5. CÁC COMPONENT GỐC ĐÃ NÂNG CẤP: SYSTEM DOCS & USERS
+   5. SYSTEM DOCS (DATA ISOLATION) & USERS (SEPARATION OF DUTIES / RBAC)
    ========================================================================== */
 function SystemDocs() {
   const [docs, setDocs] = useState([]);
@@ -659,10 +719,9 @@ function SystemDocs() {
     <div className="panel">
       <div className="panel-head">
         <div>
-          <h3>🏛️ Quản lý Tài liệu gốc Hệ thống</h3>
+          <h3>🏛️ Quản lý Tài liệu gốc Hệ thống (Data Steward — Knowledge Base chung)</h3>
           <p className="panel-sub">
-            Tri thức nền tảng dùng chung cho tất cả bác sĩ. Tài liệu nạp ở đây sẽ được cắt đoạn (Chunking),
-            tính vector nhúng (Embedding) và đưa vào Hybrid Search.
+            Phân vùng không gian dữ liệu (Data Isolation): Admin chỉ quản lý tài liệu y văn dùng chung toàn viện. Tài liệu riêng của User trong Save box được lưu ở Namespace riêng và chặn truy cập từ phía Backend.
           </p>
         </div>
       </div>
@@ -720,50 +779,93 @@ function SystemDocs() {
 }
 
 function Users() {
+  const { user: currentUser } = useAuth();
   const [users, setUsers] = useState([]);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
 
-  useEffect(() => {
+  const load = () => {
     api.adminUsers()
       .then((d) => setUsers(d.users || []))
       .catch((e) => setError(e.message));
-  }, []);
+  };
 
-  if (error) return <div className="auth-error">⚠️ {error}</div>;
+  useEffect(() => { load(); }, []);
+
+  const handleChangeRole = async (u, newRoleKey) => {
+    setError(''); setNotice('');
+    try {
+      const res = await api.adminUpdateUserRole(u.id, newRoleKey);
+      setNotice(`✅ Đã cập nhật phân quyền cho ${u.username} (${u.anon_id}) → ${res.admin_subrole}.`);
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
 
   return (
     <div className="panel">
       <div className="panel-head">
         <div>
-          <h3>👥 Quản lý Người dùng ({users.length})</h3>
-          <p className="panel-sub">Danh sách tài khoản bác sĩ, chuyên khoa điều trị và khối lượng truy vấn</p>
+          <h3>👥 Quản lý Người dùng &amp; Tách biệt Nhiệm vụ (Separation of Duties - RBAC) ({users.length})</h3>
+          <p className="panel-sub">
+            Phân chia quyền theo nguyên tắc Least Privilege: <strong>System Admin</strong> (Hạ tầng/Model), <strong>Data Steward</strong> (Duyệt tài liệu chung), <strong>Auditor</strong> (Kiểm toán logs) và <strong>Bác sĩ (User)</strong>.
+          </p>
         </div>
       </div>
+
+      {error && <div className="auth-error" style={{ marginBottom: 12 }}>⚠️ {error}</div>}
+      {notice && <div className="save-ok" style={{ marginBottom: 12 }}>{notice}</div>}
+
       <div className="log-table users-table">
         <div className="log-head">
-          <span>ID</span>
+          <span>ID Ẩn danh</span>
           <span>Tên bác sĩ</span>
-          <span>Email</span>
-          <span>Vai trò</span>
+          <span>Email (Đã che PII)</span>
+          <span>Phân quyền RBAC</span>
           <span>Chuyên khoa</span>
-          <span>Hội thoại</span>
-          <span>Lượt hỏi</span>
+          <span>Hội thoại / Lượt hỏi</span>
+          <span>Thiết lập Vai trò</span>
         </div>
-        {users.map((u) => (
-          <div key={u.id} className="log-row">
-            <span>{u.id}</span>
-            <span className="log-user font-bold">{u.username}</span>
-            <span className="log-detail">{u.email}</span>
-            <span>
-              <span className={`tag ${u.role === 'admin' ? 'tag-admin' : ''}`}>
-                {u.role === 'admin' ? 'Quản trị' : 'Bác sĩ'}
+        {users.map((u) => {
+          const isSelf = currentUser?.id === u.id;
+          const currentRoleVal = u.role !== 'admin'
+            ? 'user'
+            : u.admin_subrole === 'Data Steward'
+              ? 'data_steward'
+              : u.admin_subrole === 'Auditor'
+                ? 'auditor'
+                : 'system_admin';
+          return (
+            <div key={u.id} className="log-row">
+              <span className="log-mono">{u.anon_id}</span>
+              <span className="log-user font-bold">{u.username}</span>
+              <span className="log-mono">{u.email}</span>
+              <span>
+                <span className={`tag ${u.role === 'admin' ? 'tag-admin' : ''}`}>
+                  {u.admin_subrole}
+                </span>
               </span>
-            </span>
-            <span>{u.specialty || 'Đa khoa'}</span>
-            <span>{u.conversations}</span>
-            <span>{u.chats}</span>
-          </div>
-        ))}
+              <span>{u.specialty || 'Đa khoa'}</span>
+              <span>{u.conversations} phiên · {u.chats} câu</span>
+              <div>
+                <select
+                  className="ctl"
+                  style={{ height: 32, fontSize: 12, padding: '0 8px' }}
+                  disabled={isSelf}
+                  value={currentRoleVal}
+                  onChange={(e) => handleChangeRole(u, e.target.value)}
+                  title={isSelf ? 'Không thể tự hạ quyền của chính mình' : 'Chọn vai trò RBAC'}
+                >
+                  <option value="user">Bác sĩ (User)</option>
+                  <option value="system_admin">System Admin (Hạ tầng)</option>
+                  <option value="data_steward">Data Steward (Tài liệu)</option>
+                  <option value="auditor">Auditor (Kiểm toán)</option>
+                </select>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -772,6 +874,26 @@ function Users() {
 /* ==========================================================================
    6. CÁC HELPER VÀ BADGES
    ========================================================================== */
+
+/** Tô nổi bật các thẻ [REDACTED_NAME], [REDACTED_PHONE], [REDACTED_CCCD]... */
+function RedactedText({ text }) {
+  if (!text) return '—';
+  const parts = String(text).split(/(\[REDACTED_[A-Z]+\])/g);
+  return (
+    <>
+      {parts.map((part, i) =>
+        /^\[REDACTED_[A-Z]+\]$/.test(part) ? (
+          <span key={i} className="redacted-badge" title="Thông tin định danh nhạy cảm đã được hệ thống tự động che mờ">
+            {part}
+          </span>
+        ) : (
+          <span key={i}>{part}</span>
+        )
+      )}
+    </>
+  );
+}
+
 function StatCard({ icon, label, value, hint, highlight }) {
   return (
     <div className={`stat-card ${highlight ? 'card-highlight' : ''}`}>
@@ -814,8 +936,9 @@ function ActionBadge({ action }) {
   const map = {
     login: { label: 'Đăng nhập', cls: 'tag-login' },
     register: { label: 'Đăng ký', cls: 'tag-register' },
-    upload: { label: 'Save box', cls: 'tag-upload' },
+    upload: { label: 'Namespace riêng', cls: 'tag-upload' },
     admin_upload: { label: 'Upload gốc', cls: 'tag-admin_upload' },
+    role_change: { label: 'Phân quyền RBAC', cls: 'tag-login' },
   };
   const item = map[action] || { label: action, cls: 'tag-other' };
   return <span className={`tag ${item.cls}`}>{item.label}</span>;

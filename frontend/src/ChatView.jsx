@@ -51,7 +51,7 @@ export default function ChatView({ conversationId, selectedModel, onConversation
 
   const attempt = async (question, model) => {
     let gotToken = false; let errorMsg = null;
-    patchBot({ content: '', streaming: true, pipeline: null, sources: [], factcheck: null, error: false });
+    patchBot({ content: '', streaming: true, pipeline: null, sources: [], factcheck: null, error: false, question, model });
     await streamChat({ message: question, model, conversation_id: convRef.current }, (ev) => {
       if (ev.type === 'conversation') {
         if (!convRef.current && ev.data?.conversation_id) {
@@ -91,7 +91,7 @@ export default function ChatView({ conversationId, selectedModel, onConversation
     setInput('');
     setLoading(true);
     setActiveStage('deid');
-    setMessages((prev) => [...prev, { role: 'bot', content: '', streaming: true, pipeline: null, sources: [], factcheck: null }]);
+    setMessages((prev) => [...prev, { role: 'bot', content: '', streaming: true, pipeline: null, sources: [], factcheck: null, question }]);
 
     try {
       let model = selectedModel;
@@ -130,7 +130,10 @@ export default function ChatView({ conversationId, selectedModel, onConversation
             <EmptyState onPick={(q) => setInput(q)} />
           ) : (
             <div className="message-list">
-              {messages.map((m, i) => <MessageBubble key={i} msg={m} />)}
+              {messages.map((m, i) => {
+                const prevQuery = m.question || (i > 0 && messages[i - 1]?.role === 'user' ? messages[i - 1].content : '');
+                return <MessageBubble key={i} msg={m} prevQuery={prevQuery} selectedModel={selectedModel} />;
+              })}
               <div ref={endRef} />
             </div>
           )}
@@ -168,8 +171,31 @@ function EmptyState({ onPick }) {
   );
 }
 
-function MessageBubble({ msg }) {
+function MessageBubble({ msg, prevQuery, selectedModel }) {
   const isUser = msg.role === 'user';
+  const [feedbackSent, setFeedbackSent] = useState(false);
+
+  const handleSendFeedback = async () => {
+    if (feedbackSent) return;
+    const reason = window.prompt(
+      'Cho phép gửi đoạn hội thoại này (hệ thống sẽ tự động ẩn thông tin cá nhân PII/PHI) cho Quản trị viên để đánh giá và sửa lỗi?\n\nNhập ghi chú lỗi (tuỳ chọn):',
+      'Câu trả lời thiếu trích dẫn hoặc chưa sát phác đồ'
+    );
+    if (reason === null) return;
+    try {
+      await api.submitFeedback({
+        query: prevQuery || '',
+        answer: msg.content || '',
+        reason: reason || 'Báo lỗi chất lượng câu trả lời',
+        model: msg.pipeline?.model || msg.model || selectedModel,
+        grounded_ratio: msg.factcheck?.grounded_ratio ?? null,
+      });
+      setFeedbackSent(true);
+    } catch {
+      /* ignore */
+    }
+  };
+
   return (
     <div className={`message ${msg.role}`}>
       <div className="avatar" aria-hidden="true">{isUser ? '👤' : '✚'}</div>
@@ -189,6 +215,19 @@ function MessageBubble({ msg }) {
         </div>
         {!isUser && !msg.streaming && msg.sources?.length > 0 && <Citations sources={msg.sources} />}
         {!isUser && msg.pipeline?.retrieval && <PipelineTrace pipeline={msg.pipeline} />}
+        {!isUser && !msg.streaming && msg.content && (
+          <div className="bubble-feedback-row">
+            <button
+              type="button"
+              className={`feedback-optin-btn ${feedbackSent ? 'sent' : ''}`}
+              onClick={handleSendFeedback}
+              disabled={feedbackSent}
+              title="Chia sẻ đoạn hội thoại đã che PII/PHI cho Admin để cải thiện chất lượng RAG"
+            >
+              {feedbackSent ? '✅ Đã gửi phản hồi ẩn danh cho Admin' : '🚩 Báo lỗi câu trả lời (Chia sẻ ẩn danh cho Admin)'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

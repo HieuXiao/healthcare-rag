@@ -3,9 +3,9 @@
 export const ADMIN_TABS_META = [
   { keyId: 'admin:dashboard', view: 'admin', adminTab: 'dashboard', label: 'Tổng quan & Biểu đồ', group: 'Quản trị hệ thống' },
   { keyId: 'admin:chats', view: 'admin', adminTab: 'chats', label: 'Truy vấn & Bám nguồn', group: 'Quản trị hệ thống' },
-  { keyId: 'admin:auth-logs', view: 'admin', adminTab: 'auth-logs', label: 'Xác thực & Bảo mật', group: 'Quản trị hệ thống' },
+  { keyId: 'admin:auth-logs', view: 'admin', adminTab: 'auth-logs', label: 'Xác thực & Kiểm toán', group: 'Quản trị hệ thống' },
   { keyId: 'admin:docs', view: 'admin', adminTab: 'docs', label: 'Tài liệu gốc hệ thống', group: 'Quản trị hệ thống' },
-  { keyId: 'admin:users', view: 'admin', adminTab: 'users', label: 'Quản lý người dùng', group: 'Quản trị hệ thống' },
+  { keyId: 'admin:users', view: 'admin', adminTab: 'users', label: 'Người dùng & RBAC', group: 'Quản trị hệ thống' },
 ];
 
 export const PERSONAL_TABS_META = [

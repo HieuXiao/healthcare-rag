@@ -1,23 +1,99 @@
-"""Router Admin: quản lý tài liệu gốc hệ thống, người dùng, dashboard đánh giá."""
+"""
+Router Admin: Thiết kế theo mô hình Security by Design (Bảo mật theo thiết kế)
+vừa bảo vệ quyền riêng tư của User (GDPR / Nghị định 13/2023/NĐ-CP / HIPAA),
+vừa giữ trọn vẹn năng lực quản trị, theo dõi vận hành và đánh giá RAG (RAG Eval) cho Admin:
+
+1. Masking & Redaction (PII/PHI): Admin xem được nội dung câu hỏi trong Query Logs để đánh giá RAG,
+   nhưng mọi tên người, SĐT, CCCD, Email, Địa chỉ đều tự động được thay bằng [REDACTED_NAME], [REDACTED_PHONE]...
+2. Băm định danh trong Logs (Anonymized Logs): Trong nhật ký truy vấn và phản hồi, tài khoản người hỏi
+   được hiển thị dưới dạng ID ẩn danh (ví dụ: User_89421) thay vì tên thật/avatar để tránh soi mói cá nhân.
+3. Phân vùng không gian dữ liệu (Data Isolation): Tài liệu riêng trong Save box thuộc Namespace riêng của User,
+   Admin chỉ quản lý tài liệu hệ thống dùng chung (scope='system').
+4. Tách biệt vai trò (Separation of Duties / RBAC): Hỗ trợ phân quyền Admin Hệ thống, Admin Dữ liệu (Data Steward),
+   Kiểm toán viên (Auditor) và Người dùng (Bác sĩ).
+"""
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 import time
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
-from core import auth, graph_seed, services
+from core import auth, deidentify, graph_seed, services
 from core.db import BASE_INDEX_MARKER, UPLOAD_DIR, get_db, to_stored_path
-from core.models import ActivityLog, Conversation, Document, Message, User
+from core.models import ActivityLog, Conversation, Document, User
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 ALLOWED_EXT = {".pdf", ".txt", ".md"}
 MAX_BYTES = 30 * 1024 * 1024
+
+_INTENT_META_RE = re.compile(r"^intent=([a-zA-Z0-9_-]+)\|phi_redacted=(\d+)$")
+
+
+# ---- Security by Design Helpers -------------------------------------------
+def _anonymize_user_id(user_id: int | None) -> str:
+    """
+    Chiến lược 4: Băm log (Anonymized Logs).
+    Hiển thị ID ngẫu nhiên ổn định dạng User_98723 trong Query Logs thay vì tên thật/email của User.
+    """
+    if not user_id:
+        return "User_00000"
+    digest = hashlib.sha256(f"medrag-anon-salt:{user_id}".encode("utf-8")).hexdigest()
+    num = int(digest[:8], 16) % 90000 + 10000
+    return f"User_{num}"
+
+
+def _mask_email(email: str) -> str:
+    """Che một phần email để bảo vệ PII (ví dụ: bs***@benhvien.vn)."""
+    if not email or "@" not in email:
+        return "***"
+    local, domain = email.split("@", 1)
+    if len(local) <= 2:
+        masked_local = local[0] + "***" if local else "***"
+    else:
+        masked_local = local[:2] + "***"
+    return f"{masked_local}@{domain}"
+
+
+def _format_redacted_query(raw_detail: str | None) -> Tuple[str, int]:
+    """
+    Chiến lược 1: Masking & Redaction (PII/PHI).
+    Đảm bảo mọi câu hỏi hiển thị trên màn hình Admin đều giữ nguyên câu chữ y khoa
+    nhưng đã che mờ thông tin nhạy cảm thành [REDACTED_NAME], [REDACTED_PHONE], [REDACTED_CCCD]...
+    """
+    detail = (raw_detail or "").strip()
+    if not detail:
+        return "—", 0
+    if _INTENT_META_RE.match(detail):
+        return "[Câu hỏi y khoa đã xử lý ẩn danh]", 0
+    redacted, count = deidentify.default_deidentifier.redact_for_admin(detail)
+    # Đếm cả các nhãn [REDACTED_...] đã được thay thế từ lúc ghi log
+    existing_tags = len(re.findall(r"\[REDACTED_[A-Z]+\]", redacted))
+    return redacted, max(count, existing_tags)
+
+
+def _sanitize_auth_detail(action: str, raw_detail: str | None) -> str:
+    """Làm sạch chi tiết nhật ký bảo mật: che một phần email và ẩn tên file cá nhân trong Save box."""
+    detail = (raw_detail or "").strip()
+    if action in ("login", "register"):
+        if "@" in detail and "***" not in detail:
+            return f"Xác thực tài khoản ({_mask_email(detail)})"
+        return detail or "Xác thực hệ thống"
+    if action == "upload":
+        if "Tài liệu cá nhân" in detail or "Namespace" in detail:
+            return detail
+        chunk_match = re.search(r"\((\d+\s*chunk|\d+\s*đoạn)\)", detail)
+        suffix = f" ({chunk_match.group(1)})" if chunk_match else ""
+        return f"Nạp file riêng vào Namespace cá nhân [Đã ẩn tên file]{suffix}"
+    return detail or "—"
 
 
 def _doc_out(d: Document):
@@ -29,7 +105,7 @@ def _doc_out(d: Document):
     }
 
 
-# ---- System documents -----------------------------------------------------
+# ---- System documents (Chiến lược 3: Data Isolation - Chỉ quản lý file chung) ----
 @router.get("/documents")
 def list_system_docs(admin: User = Depends(auth.require_admin), db: Session = Depends(get_db)):
     docs = db.query(Document).filter(Document.scope == "system") \
@@ -92,7 +168,7 @@ def delete_system_doc(doc_id: int, admin: User = Depends(auth.require_admin), db
     return {"ok": True}
 
 
-# ---- Users ----------------------------------------------------------------
+# ---- Users & Separation of Duties (RBAC) ----------------------------------
 @router.get("/users")
 def list_users(admin: User = Depends(auth.require_admin), db: Session = Depends(get_db)):
     users = db.query(User).order_by(User.created_at.asc()).all()
@@ -102,14 +178,61 @@ def list_users(admin: User = Depends(auth.require_admin), db: Session = Depends(
         n_chat = db.query(func.count(ActivityLog.id)).filter(
             ActivityLog.user_id == u.id, ActivityLog.action == "chat").scalar()
         out.append({
-            "id": u.id, "email": u.email, "username": u.username, "role": u.role,
-            "specialty": u.specialty or "", "conversations": n_conv, "chats": n_chat,
+            "id": u.id,
+            "anon_id": _anonymize_user_id(u.id),
+            "email": _mask_email(u.email),
+            "username": u.username,
+            "role": u.role,
+            "admin_subrole": u.title if u.role == "admin" and u.title in ("System Admin", "Data Steward", "Auditor") else ("System Admin" if u.role == "admin" else "Bác sĩ / User"),
+            "specialty": u.specialty or "Đa khoa",
+            "conversations": n_conv,
+            "chats": n_chat,
             "created_at": u.created_at.isoformat() if u.created_at else "",
         })
     return {"users": out}
 
 
-# ---- Activity dashboard ---------------------------------------------------
+@router.put("/users/{user_id}/role")
+def update_user_role(user_id: int, payload: dict,
+                     admin: User = Depends(auth.require_admin), db: Session = Depends(get_db)):
+    """
+    Chiến lược 2: Tách biệt nhiệm vụ (Separation of Duties / Least Privilege).
+    Cho phép gán các vai trò chuyên biệt:
+    - 'user': Bác sĩ / Người dùng
+    - 'system_admin': Admin hệ thống (Hạ tầng, model LLM, thông số)
+    - 'data_steward': Admin dữ liệu (Quản lý Knowledge Base chung)
+    - 'auditor': Kiểm toán viên (Thanh tra logs bảo mật)
+    """
+    requested = (payload.get("role") or "").strip()
+    role_map = {
+        "user": ("user", "Bác sĩ"),
+        "admin": ("admin", "System Admin"),
+        "system_admin": ("admin", "System Admin"),
+        "data_steward": ("admin", "Data Steward"),
+        "auditor": ("admin", "Auditor"),
+    }
+    if requested not in role_map:
+        raise HTTPException(status_code=400, detail="Vai trò không hợp lệ.")
+
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng.")
+    new_db_role, subrole_title = role_map[requested]
+    if target.id == admin.id and new_db_role != "admin":
+        raise HTTPException(status_code=400, detail="Không thể tự hạ quyền Quản trị viên của chính mình.")
+
+    target.role = new_db_role
+    target.title = subrole_title
+    db.add(ActivityLog(
+        user_id=admin.id,
+        action="role_change",
+        detail=f"Phân quyền {_anonymize_user_id(target.id)} → {subrole_title}",
+    ))
+    db.commit()
+    return {"ok": True, "id": target.id, "role": target.role, "admin_subrole": subrole_title}
+
+
+# ---- Activity dashboard (Anonymized Logs + PII Redaction) -----------------
 @router.get("/activity")
 def activity(admin: User = Depends(auth.require_admin), db: Session = Depends(get_db)):
     total_users = db.query(func.count(User.id)).scalar()
@@ -132,7 +255,6 @@ def activity(admin: User = Depends(auth.require_admin), db: Session = Depends(ge
         ActivityLog.action == "chat").group_by(ActivityLog.model).all()
 
     # Phân bổ bám nguồn lâm sàng (Fact-Check Distribution)
-    # High (>= 0.7: Đạt chuẩn y văn), Medium (0.4 - 0.69: Cần lưu ý), Low (< 0.4: Cảnh báo ảo giác)
     all_chat_grounding = db.query(ActivityLog.grounded_ratio).filter(
         ActivityLog.action == "chat", ActivityLog.grounded_ratio.isnot(None)).all()
     grounding_dist = {"high": 0, "medium": 0, "low": 0}
@@ -173,51 +295,60 @@ def activity(admin: User = Depends(auth.require_admin), db: Session = Depends(ge
         "entity_types": [{"type": k, "count": v} for k, v in entity_types.items()],
     }
 
-    # 1. Tách riêng Chat logs (Truy vấn lâm sàng)
+    # 1. Nhật ký Truy vấn (Query Logs):
+    # - Ẩn danh người hỏi thành User_98723 (Anonymized Logs)
+    # - Hiển thị nội dung câu hỏi nhưng đã che PII/PHI thành [REDACTED_NAME], [REDACTED_PHONE]...
     chat_logs_query = db.query(ActivityLog).filter(
         ActivityLog.action == "chat"
     ).order_by(ActivityLog.created_at.desc()).limit(50).all()
 
     chat_logs = []
     for r in chat_logs_query:
-        u = db.query(User).filter(User.id == r.user_id).first()
+        redacted_query, phi_count = _format_redacted_query(r.detail)
         chat_logs.append({
             "id": r.id,
-            "user": u.username if u else "—",
-            "user_email": u.email if u else "—",
-            "query": r.detail or "—",
+            "user": _anonymize_user_id(r.user_id),
+            "query": redacted_query,
+            "phi_redacted": phi_count,
             "model": r.model or "—",
             "grounded_ratio": r.grounded_ratio,
             "created_at": r.created_at.isoformat() if r.created_at else "",
         })
 
-    # 2. Tách riêng Auth & Security logs (Đăng nhập, đăng ký, upload)
+    # 2. Phản hồi ẩn danh do User chủ động gửi (Opt-in Feedback)
+    feedback_query = db.query(ActivityLog).filter(
+        ActivityLog.action == "feedback"
+    ).order_by(ActivityLog.created_at.desc()).limit(30).all()
+
+    feedback_logs = []
+    for r in feedback_query:
+        try:
+            fb = json.loads(r.detail or "{}")
+        except Exception:
+            fb = {"query": r.detail or "—", "answer": "", "reason": "Báo lỗi"}
+        feedback_logs.append({
+            "id": r.id,
+            "user": _anonymize_user_id(r.user_id),
+            "query": fb.get("query") or "—",
+            "answer": fb.get("answer") or "—",
+            "reason": fb.get("reason") or "Báo lỗi",
+            "model": r.model or "—",
+            "grounded_ratio": r.grounded_ratio,
+            "created_at": r.created_at.isoformat() if r.created_at else "",
+        })
+
+    # 3. Nhật ký Xác thực & Kiểm toán bảo mật (Auditor Logs)
     auth_logs_query = db.query(ActivityLog).filter(
-        ActivityLog.action != "chat"
+        ActivityLog.action.notin_(["chat", "feedback"])
     ).order_by(ActivityLog.created_at.desc()).limit(50).all()
 
     auth_logs = []
     for r in auth_logs_query:
-        u = db.query(User).filter(User.id == r.user_id).first()
         auth_logs.append({
             "id": r.id,
             "action": r.action,
-            "user": u.username if u else "—",
-            "user_email": u.email if u else "—",
-            "detail": r.detail or "—",
-            "created_at": r.created_at.isoformat() if r.created_at else "",
-        })
-
-    # Toàn bộ recent (để tương thích ngược)
-    recent = db.query(ActivityLog).order_by(ActivityLog.created_at.desc()).limit(30).all()
-    recent_out = []
-    for r in recent:
-        u = db.query(User).filter(User.id == r.user_id).first()
-        recent_out.append({
-            "id": r.id, "action": r.action,
-            "user": u.username if u else "—",
-            "detail": (r.detail or "")[:120], "model": r.model or "",
-            "grounded_ratio": r.grounded_ratio,
+            "user": _anonymize_user_id(r.user_id),
+            "detail": _sanitize_auth_detail(r.action, r.detail),
             "created_at": r.created_at.isoformat() if r.created_at else "",
         })
 
@@ -236,7 +367,6 @@ def activity(admin: User = Depends(auth.require_admin), db: Session = Depends(ge
         "timeline": timeline,
         "graph_stats": graph_stats,
         "chat_logs": chat_logs,
+        "feedback_logs": feedback_logs,
         "auth_logs": auth_logs,
-        "recent": recent_out,
     }
-

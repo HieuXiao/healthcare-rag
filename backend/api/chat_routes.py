@@ -1,16 +1,16 @@
-"""Router: quản lý hội thoại + chat (non-stream & SSE), lưu lịch sử theo account."""
+"""Router: quản lý hội thoại + chat (non-stream & SSE) + Báo lỗi ẩn danh cho Admin."""
 
 from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from api import usage
 from api.schemas import ChatRequest
-from core import auth, config, services
+from core import auth, config, deidentify, services
 from core.db import SessionLocal, get_db
 from core.generator import build_pipeline, get_default_api_key
 from core.models import ActivityLog, Conversation, Message, User
@@ -113,6 +113,16 @@ def _ensure_conversation(db, user, conversation_id, first_message):
     return conv
 
 
+def _build_redacted_query_log(raw_query: str) -> str:
+    """
+    Chiến lược 1: Masking & Redaction (PII/PHI) theo chuẩn Security by Design.
+    Giữ nguyên ngữ cảnh câu hỏi y khoa để Admin đánh giá RAG, nhưng tự động thay
+    mọi tên người, SĐT, CCCD, Email, Địa chỉ thành [REDACTED_NAME], [REDACTED_PHONE]...
+    """
+    redacted_q, _ = deidentify.default_deidentifier.redact_for_admin((raw_query or "").strip())
+    return redacted_q[:240]
+
+
 # ---- Chat (non-stream) ----------------------------------------------------
 @router.post("/chat")
 def chat(req: ChatRequest, user: User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
@@ -148,7 +158,7 @@ def chat(req: ChatRequest, user: User = Depends(auth.get_current_user), db: Sess
     db.add(Message(conversation_id=conv.id, role="bot", content=answer,
                    sources_json=json.dumps(sources, ensure_ascii=False),
                    pipeline_json=json.dumps(pipe_meta, ensure_ascii=False)))
-    db.add(ActivityLog(user_id=user.id, action="chat", detail=req.message[:200], model=model,
+    db.add(ActivityLog(user_id=user.id, action="chat", detail=_build_redacted_query_log(req.message), model=model,
                        grounded_ratio=(pipe_meta.get("factcheck") or {}).get("grounded_ratio")))
     conv.title = conv.title if conv.title != "Cuộc trò chuyện mới" else req.message.strip()[:48]
     db.commit()
@@ -204,7 +214,7 @@ def chat_stream(req: ChatRequest, user: User = Depends(auth.get_current_user), d
                                                   "timings": final.get("timings", {})}, ensure_ascii=False),
                     ))
                     _db.add(ActivityLog(
-                        user_id=user_id, action="chat", detail=question[:200], model=model,
+                        user_id=user_id, action="chat", detail=_build_redacted_query_log(question), model=model,
                         grounded_ratio=(final.get("factcheck") or {}).get("grounded_ratio"),
                     ))
                     _db.commit()
@@ -217,3 +227,36 @@ def chat_stream(req: ChatRequest, user: User = Depends(auth.get_current_user), d
         event_generator(), media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
+
+
+# ---- Chiến lược 4: Phản hồi ẩn danh có sự đồng ý của User (Opt-in Feedback) ----
+@router.post("/chat/feedback")
+def submit_chat_feedback(payload: dict, user: User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+    """
+    Cho phép User báo lỗi câu trả lời của AI và chủ động chọn:
+    'Cho phép gửi đoạn hội thoại này (đã tự động che PII/PHI) cho Quản trị viên để sửa lỗi'.
+    """
+    raw_query = (payload.get("query") or "").strip()
+    raw_answer = (payload.get("answer") or "").strip()
+    reason = (payload.get("reason") or "Câu trả lời chưa chính xác / thiếu trích dẫn").strip()
+    model = (payload.get("model") or config.DEFAULT_MODEL).strip()
+    grounded_ratio = payload.get("grounded_ratio")
+
+    redacted_q, _ = deidentify.default_deidentifier.redact_for_admin(raw_query)
+    redacted_a, _ = deidentify.default_deidentifier.redact_for_admin(raw_answer)
+
+    feedback_payload = json.dumps({
+        "query": redacted_q[:300],
+        "answer": redacted_a[:500],
+        "reason": reason[:200],
+    }, ensure_ascii=False)
+
+    db.add(ActivityLog(
+        user_id=user.id,
+        action="feedback",
+        detail=feedback_payload,
+        model=model,
+        grounded_ratio=grounded_ratio,
+    ))
+    db.commit()
+    return {"ok": True, "detail": "Đã gửi phản hồi ẩn danh (đã che PII/PHI) tới Quản trị viên."}

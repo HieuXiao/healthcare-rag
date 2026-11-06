@@ -25,10 +25,10 @@ const VIEW_TITLES = {
 
 const ADMIN_TITLES = {
   dashboard: 'Quản trị hệ thống — Tổng quan & Biểu đồ y khoa',
-  chats: 'Quản trị hệ thống — Truy vấn & Bám nguồn (Med-FactCheck)',
-  'auth-logs': 'Quản trị hệ thống — Xác thực & Bảo mật',
-  docs: 'Quản trị hệ thống — Tài liệu gốc hệ thống',
-  users: 'Quản trị hệ thống — Quản lý người dùng',
+  chats: 'Quản trị hệ thống — Nhật ký Truy vấn (PII Redacted) & Đánh giá RAG',
+  'auth-logs': 'Quản trị hệ thống — Xác thực & Kiểm toán Bảo mật',
+  docs: 'Quản trị hệ thống — Tài liệu gốc hệ thống (Data Isolation)',
+  users: 'Quản trị hệ thống — Người dùng & Phân quyền RBAC',
 };
 
 function parseHash(userRole) {

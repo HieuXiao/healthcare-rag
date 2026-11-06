@@ -99,9 +99,9 @@ const ICONS = {
 const ADMIN_NAV_ITEMS = [
   { id: 'dashboard', keyId: 'admin:dashboard', label: 'Tổng quan & Biểu đồ', icon: ICONS.dashboard },
   { id: 'chats', keyId: 'admin:chats', label: 'Truy vấn & Bám nguồn', icon: ICONS.factCheck },
-  { id: 'auth-logs', keyId: 'admin:auth-logs', label: 'Xác thực & Bảo mật', icon: ICONS.security },
+  { id: 'auth-logs', keyId: 'admin:auth-logs', label: 'Xác thực & Kiểm toán', icon: ICONS.security },
   { id: 'docs', keyId: 'admin:docs', label: 'Tài liệu gốc hệ thống', icon: ICONS.docs },
-  { id: 'users', keyId: 'admin:users', label: 'Quản lý người dùng', icon: ICONS.users },
+  { id: 'users', keyId: 'admin:users', label: 'Người dùng & RBAC', icon: ICONS.users },
 ];
 
 export default function Sidebar({

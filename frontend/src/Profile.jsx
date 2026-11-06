@@ -3,7 +3,7 @@ import { api } from './api.js';
 import { useAuth } from './auth.jsx';
 
 export default function Profile() {
-  const { user, setUser } = useAuth();
+  const { user, setUser, logout } = useAuth();
   const [form, setForm] = useState({
     username: user.username || '',
     full_name: user.full_name || '',
@@ -15,6 +15,7 @@ export default function Profile() {
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [exporting, setExporting] = useState(false);
 
   const set = (k) => (e) => { setForm((f) => ({ ...f, [k]: e.target.value })); setSaved(false); };
 
@@ -28,6 +29,41 @@ export default function Profile() {
     } catch (err) {
       setError(err.message || 'Lỗi lưu hồ sơ');
     } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleExportData = async () => {
+    setExporting(true);
+    setError('');
+    try {
+      const data = await api.exportMyData();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `medrag-personal-data-${user.id}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err.message || 'Không thể trích xuất dữ liệu');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!window.confirm(
+      '⚠️ XÁC NHẬN XOÁ VĨNH VIỄN TÀI KHOẢN (GDPR Art. 17):\n\n' +
+      'Toàn bộ hồ sơ cá nhân, lịch sử hội thoại và tài liệu trong Save box của bạn sẽ bị xoá vĩnh viễn khỏi hệ thống và Vector DB. Bạn có chắc chắn muốn tiếp tục?'
+    )) return;
+    setBusy(true);
+    setError('');
+    try {
+      await api.deleteMyAccount();
+      logout();
+    } catch (err) {
+      setError(err.message || 'Không thể xoá tài khoản');
       setBusy(false);
     }
   };
@@ -65,6 +101,27 @@ export default function Profile() {
             {busy ? 'Đang lưu…' : 'Lưu hồ sơ'}
           </button>
         </form>
+      </div>
+
+      {/* Quyền Dữ liệu Cá nhân theo chuẩn GDPR & Nghị định 13/2023/NĐ-CP */}
+      <div className="panel narrow">
+        <div className="panel-head">
+          <div>
+            <h3>🛡️ Quyền Riêng tư &amp; Kiểm soát Dữ liệu Cá nhân (GDPR / NĐ 13/2023)</h3>
+            <p className="panel-sub">
+              Dữ liệu hội thoại và tài liệu trong Save box của bạn được cô lập hoàn toàn; ngay cả Quản trị viên hệ thống cũng không có quyền đọc nội dung. Bạn toàn quyền trích xuất hoặc xoá vĩnh viễn dữ liệu của mình.
+            </p>
+          </div>
+        </div>
+
+        <div className="gdpr-actions-row">
+          <button type="button" className="mini-btn" onClick={handleExportData} disabled={exporting}>
+            {exporting ? 'Đang xuất JSON…' : '📥 Tải xuống toàn bộ dữ liệu cá nhân (GDPR Art. 15 & 20)'}
+          </button>
+          <button type="button" className="mini-btn danger" onClick={handleDeleteAccount} disabled={busy}>
+            🗑️ Xoá vĩnh viễn tài khoản &amp; dữ liệu (GDPR Art. 17)
+          </button>
+        </div>
       </div>
     </div>
   );

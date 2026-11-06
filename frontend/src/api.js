@@ -32,7 +32,7 @@ async function handle(res) {
 }
 
 export const api = {
-  // ---- auth ----
+  // ---- auth & GDPR user rights ----
   register: (body) => fetch(`${API_BASE_URL}/api/auth/register`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   }).then(handle),
@@ -42,6 +42,10 @@ export const api = {
   me: () => fetch(`${API_BASE_URL}/api/auth/me`, { headers: authHeaders() }).then(handle),
   updateProfile: (body) => fetch(`${API_BASE_URL}/api/auth/me`, {
     method: 'PUT', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body),
+  }).then(handle),
+  exportMyData: () => fetch(`${API_BASE_URL}/api/auth/me/export`, { headers: authHeaders() }).then(handle),
+  deleteMyAccount: () => fetch(`${API_BASE_URL}/api/auth/me`, {
+    method: 'DELETE', headers: authHeaders(),
   }).then(handle),
 
   // ---- meta ----
@@ -75,7 +79,12 @@ export const api = {
     method: 'DELETE', headers: authHeaders(),
   }).then(handle),
 
-  // ---- admin ----
+  // ---- feedback (Opt-in Anonymized RAG Eval) ----
+  submitFeedback: (body) => fetch(`${API_BASE_URL}/api/chat/feedback`, {
+    method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body),
+  }).then(handle),
+
+  // ---- admin (Privacy-by-Design / Zero-PHI) ----
   adminDocuments: () => fetch(`${API_BASE_URL}/api/admin/documents`, { headers: authHeaders() }).then(handle),
   adminUploadDocument: (file, note = '') => {
     const fd = new FormData();
@@ -90,7 +99,16 @@ export const api = {
     method: 'DELETE', headers: authHeaders(),
   }).then(handle),
   adminUsers: () => fetch(`${API_BASE_URL}/api/admin/users`, { headers: authHeaders() }).then(handle),
+  adminUpdateUserRole: (id, role) => fetch(`${API_BASE_URL}/api/admin/users/${id}/role`, {
+    method: 'PUT', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ role }),
+  }).then(handle),
+  adminDeleteUser: (id) => fetch(`${API_BASE_URL}/api/admin/users/${id}`, {
+    method: 'DELETE', headers: authHeaders(),
+  }).then(handle),
   adminActivity: () => fetch(`${API_BASE_URL}/api/admin/activity`, { headers: authHeaders() }).then(handle),
+  adminSanitizeLegacyLogs: () => fetch(`${API_BASE_URL}/api/admin/privacy/sanitize-legacy-logs`, {
+    method: 'POST', headers: authHeaders(),
+  }).then(handle),
 };
 
 // SSE streaming chat. onEvent(event). Returns when stream ends.

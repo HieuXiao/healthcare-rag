@@ -124,6 +124,22 @@ class PHIDeidentifier:
             restored = restored.replace(token, mapping[token])
         return restored
 
+    def redact_for_admin(self, text: str) -> Tuple[str, int]:
+        """
+        Masking & Redaction dành riêng cho nhật ký Admin (Security by Design):
+        Giữ nguyên câu hỏi lâm sàng để Admin đánh giá chất lượng RAG (RAG Eval),
+        nhưng tự động thay mọi thông tin định danh cá nhân (PII/PHI) thành nhãn
+        [REDACTED_NAME], [REDACTED_PHONE], [REDACTED_CCCD], [REDACTED_EMAIL], v.v.
+        Trả về: (redacted_text, phi_count).
+        """
+        if not text:
+            return "", 0
+        res = self.deidentify(text)
+        out = res.text
+        # Chuyển __PHI_<LOẠI>_<n>__ thành [REDACTED_<LOẠI>] dễ đọc cho Admin
+        out = re.sub(r"__PHI_([A-Z]+)_(\d+)__", r"[REDACTED_\1]", out)
+        return out, res.total
+
 
 # Singleton tiện dùng khắp nơi.
 default_deidentifier = PHIDeidentifier()
